@@ -1,0 +1,139 @@
+---
+title: "Make and Use Coefficients"
+author: "Mausam Duggal"
+date: "September 6, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(knitr); library(reshape2); library(ggplot2)
+
+wd <- setwd("c:/personal/r")
+```
+
+### Modify the Make and Use tables from the previous StatsCan file. 
+
+The modification is being done because Rick's firm synthesis using an aggregated NAICS2 range like 31-33; 44-45; 48-49 etc. Thus, the idea here is to add all the values together for the NAICS2 ranges and then estimate coefficients. Once estimated, these coefficients will be repeated for all the NACIS2 in the respective range.
+
+```{r I am sick and tired of NAs so a function to set them for good}
+
+f_rep <- function(df) {
+  # this function is used to set all NA values to zero in a dataframe
+df[is.na(df)] <- 0
+return(df)
+}
+
+```
+
+
+```{r read Oregon MakeUse file}
+mu <- read.csv("I-O_Structure_CAD_Economy.csv", stringsAsFactors = FALSE)    
+```
+
+#### Make the two tables.
+
+The tables contains many categories in the commodity and industry category that do not corresspond to a MAKE and USE paradigm. Excluding those categories, both the INDUSTRY and PRODUCT fields have around 400 unique values. The unique values in each were batched out and the corressponding SCTG2 and NAICS2 codes were manually entered. These unique equivalency files are being batched below. 
+
+```{r}
+#' batch in the unique NAICS and Commodity equivalencies
+naics <- read.csv("IndustryCodes.csv", stringsAsFactors = FALSE) 
+comm <- read.csv("CommodityCodes.csv", stringsAsFactors = FALSE) %>% f_rep(.)
+
+```
+
+```{r merge the datasets}
+
+mu1 <- merge(mu, naics, by.x = 'INDUSTRY', by.y = 'Ind_Desc', all.x = TRUE) %>% 
+  merge(., comm, by.x = 'PRODUCT', by.y = 'Comm_Desc', all.x = TRUE) %>% na.omit(.)
+
+```
+
+
+```{r MAKE TABLE}
+# Group by NAICS and SCTG to create the make table
+make <- mu1 %>% group_by(NAICS2, SCTG2) %>% summarise(Tval = sum(Value))
+# cast into wide format
+make_wide <- dcast(make, NAICS2 ~ SCTG2, value.var = "Tval") %>% f_rep(.)
+
+# get column names and then set them in the dataset
+make_wide1 <- make_wide[, -1]
+rownames(make_wide1) <- make_wide[, 1]
+
+#' add in the SCTG2 columns that are presented as a range
+make_wide1$'9' <- make_wide1$`8`
+make_wide1$'11' <- make_wide1$`10`
+make_wide1$'12' <- make_wide1$`10`
+make_wide1$'17' <- make_wide1$`16`
+make_wide1$'18' <- make_wide1$`16`
+
+#' Add total column 
+make_wide1$Total <- rowSums(make_wide1)
+
+# get proportions/coefficients
+make_wide2 <- make_wide1/make_wide1$Total 
+
+# write out MAKE file
+write.csv(make_wide2, "MakeTable.csv")
+
+```
+
+
+```{r USE TABLE}
+# Group by NAICS and SCTG to create the make table
+use <- mu1 %>% group_by(SCTG2, NAICS2) %>% summarise(Tval = sum(Value))
+# cast into wide format
+use_wide <- dcast(use, SCTG2 ~ NAICS2, value.var = "Tval") %>% f_rep(.)
+
+# get column names and then set them in the dataset
+use_wide1 <- use_wide[, -1]
+rownames(use_wide1) <- use_wide[, 1]
+
+#' add in the SCTG2 rows that are presented as a range
+use_wide1['9',]<- use_wide1['8',]
+use_wide1['11',]<- use_wide1['10',]
+use_wide1['12',]<- use_wide1['10',]
+use_wide1['17',]<- use_wide1['16',]
+use_wide1['18',]<- use_wide1['16',]
+
+#' Add total column 
+use_wide1$Total <- rowSums(use_wide1)
+
+# get proportions/coefficients
+use_wide2 <- use_wide1/use_wide1$Total 
+
+# write out USE file
+write.csv(use_wide2, "UseTable.csv")
+
+```
+
+### Plot the tables
+
+```{r}
+# plot the Make table.
+make_temp <- make_wide2[, 1:42]
+make_temp$naics2 <- rownames(make_wide2)
+
+make_melt <- melt(make_temp, id.vars = "naics2") %>% setNames(., c("naics2", "sctg2", "coeff")) 
+  make_melt$sctg2 <- as.numeric(as.character(make_melt$sctg2))
+
+ggplot(make_melt, aes(y = coeff, x = factor(naics2), fill = factor(sctg2))) + geom_bar(stat = "identity") + coord_flip() + ggtitle("Make Table") + 
+  annotate("text", x = c(24, 22, 20, 18, 16, 14, 12, 10, 8, 6), y = 1.10, label = c("sctg 1:Animals and Food...Alcoholic products", "sctg 10-12: Sands", "sctg 13-24: Minerals...Plastics and Rubber", "sctg 25-30: Logs...textiles and leather", "sctg 31: Non-metallic mineral", "sctg 32-34: Base metals...machinery", "sctg 35: Electronic", "sctg 36-38: Motorized...precision instruments", "sctg 39: Furniture", "sctg40-43: Miscellaneous...Mixed freight"), size = 2)
+
+```
+
+```{r}
+# plot the USE table.
+use_temp <- use_wide2[, 1:24]
+use_temp$sctg2 <- rownames(use_wide2)
+
+use_melt <- melt(use_temp, id.vars = "sctg2") %>% setNames(., c("sctg2", "naics2", "coeff")) 
+  use_melt$naics2 <- as.numeric(as.character(make_melt$naics2))
+
+ggplot(use_melt, aes(y = coeff, x = factor(sctg2), fill = factor(naics2))) + geom_bar(stat = "identity") + coord_flip() + ggtitle("Use Table") + 
+  annotate("text", x = c(24, 22, 20, 18, 16, 14, 12, 10, 8, 6), y = 1.10, label = c("sctg 1:Animals and Food...Alcoholic products", "sctg 10-12: Sands", "sctg 13-24: Minerals...Plastics and Rubber", "sctg 25-30: Logs...textiles and leather", "sctg 31: Non-metallic mineral", "sctg 32-34: Base metals...machinery", "sctg 35: Electronic", "sctg 36-38: Motorized...precision instruments", "sctg 39: Furniture", "sctg40-43: Miscellaneous...Mixed freight"), size = 2.5)
+
+```

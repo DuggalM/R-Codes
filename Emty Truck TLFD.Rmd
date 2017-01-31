@@ -1,0 +1,164 @@
+---
+title: "Understanding Trip Length Frequency Distributions of Empty Trucks"
+output:
+  html_notebook: default
+  html_document: default
+  pdf_document: default
+---
+
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(knitr); library(grid); library(ggplot2); library(gridExtra)
+
+```
+
+#### Understanding Trip Length Frequency Ditributions and Distance Decay Dunction for Empty Trucks
+
+The motivation for calibrating different beta values for medium and heavy trucks and further categoriezed by domestic vs international flows was a result of the availability of the 2012 CVS data and the ability to mine it for empty trucks. It further allowed us to add in a local flavor to the model while asserting the simple but elegant empty truck model framework developed by Rolf and Rick for Chicago.
+
+Function to clean and produce a distance dataframe with the necessary distance bands.
+```{r}
+
+clean <- function(truck, distdf){
+  "
+  Function to bring the observed truck matrix and O-D distance flows
+  together and generate a distance matrix that can be used to display
+  a trip length frequncy distribution and the cost function
+
+  Arguments: observed truck matrix, and distance by O-D
+  Inputs: same as argument
+  Retur: distance matrix
+
+  "
+  all_obs <- transform(truck, Flag = paste0(Orig,Dest)) %>% 
+  subset(., Orig != Dest)
+
+dist <- transform(distdf, Flag = paste0(Orig, Dest))
+#' only keep those o-D pairs that match the all_obs truck trip table
+dist1 <- subset(dist, dist$Flag %in% all_obs$Flag)
+
+#' add in bands
+dist1 <- merge(dist1, all_obs, by = "Flag") %>% 
+  arrange(., Dist) %>% 
+  transform(., DFlag = ifelse(Dist <= 50, 1, 
+                              ifelse(Dist > 50 & Dist <= 100, 2, 
+                                     ifelse(Dist > 200 & Dist <= 500, 4, 
+                                            ifelse(Dist > 500 & Dist <= 1000, 5, 
+                                                   ifelse(Dist > 1000 & Dist <= 2000, 6, 
+                                                          ifelse(Dist > 100 & Dist <= 200, 3, 7)))))))
+
+return(dist1)
+}
+
+```
+
+Batch in the 2012 observed truck matrices from the CVS data, as produced by Bryce. The data were pre-classified into heavy and medium trucks and by domestic and international flows.
+```{r}
+#' read observed truck trip matrix and combine
+obs_hvy_cb <- read.csv("C:/Projects/Province-wide/Empties/empty_heavy_truck_matrix_int.csv", 
+                stringsAsFactors = FALSE)
+
+obs_med_cb <- read.csv("C:/Projects/Province-wide/Empties/empty_straight_truck_matrix_int.csv", 
+                    stringsAsFactors = FALSE)
+
+obs_hvy <- read.csv("C:/Projects/Province-wide/Empties/empty_heavy_truck_matrix.csv", 
+                stringsAsFactors = FALSE)
+
+obs_med <- read.csv("C:/Projects/Province-wide/Empties/empty_straight_truck_matrix.csv", 
+                    stringsAsFactors = FALSE)
+
+dist_cb <- read.csv("C:/Projects/Province-wide/Empties/od_road_distances_all.csv", 
+                 stringsAsFactors = FALSE)
+
+dist <- read.csv("C:/Projects/Province-wide/Empties/od_road_distances.csv", 
+                 stringsAsFactors = FALSE)
+```
+
+Generate the final distance dataframe to be used to understand the TLFD and distance decay function.
+```{r}
+
+dist1_cb_hvy <- clean(obs_hvy_cb, dist_cb)
+dist1_cb_med <- clean(obs_med_cb, dist_cb)
+dist1_hvy <- clean(obs_hvy, dist)
+dist1_med <- clean(obs_med, dist)
+
+```
+
+Plot the TLFDs
+```{r}
+#' Domestic Flows
+oh <- ggplot(dist1_hvy, aes(DFlag, Trips)) + geom_bar(stat = "identity", aes(fill = factor(DFlag))) +
+  ggtitle("TLFD - Domestic Heavies") + scale_fill_discrete(name="Distance Bands",
+                         labels=c("<50km", "50-100", "100-200", "200-500", "500-1000", "1000-2000", ">2000")) + 
+  theme(plot.title = element_text(size=10)) + theme(legend.title = element_text(size = 8)) + 
+  theme(legend.text = element_text(size = 6))
+print("The average distance travelled by a heavy truck for domestic flows is 137.7 kms")
+om <- ggplot(dist1_med, aes(DFlag, Trips)) + geom_bar(stat = "identity", aes(fill = factor(DFlag))) +
+  ggtitle("TLFD - Domestic Mediums") + scale_fill_discrete(name="Distance Bands",
+                         labels=c("<50km", "50-100", "100-200", "200-500", "500-1000", "1000-2000", ">2000")) +
+  theme(plot.title = element_text(size=10))  + theme(legend.title = element_text(size = 8)) + 
+  theme(legend.text = element_text(size = 6))
+print("The average distance travelled by a medium truck for domestic flows is 77.3 kms")
+#' International Flows
+ch <- ggplot(dist1_cb_hvy, aes(DFlag, Trips)) + geom_bar(stat = "identity", aes(fill = factor(DFlag))) + 
+  ggtitle("TLFD - International Heavies") + scale_fill_discrete(name="Distance Bands",
+                         labels=c("<50km", "50-100", "100-200", "200-500", "500-1000", "1000-2000", ">2000")) + 
+  theme(plot.title = element_text(size=10))  + theme(legend.title = element_text(size = 8)) + 
+  theme(legend.text = element_text(size = 6))
+print("The average distance travelled by a heavy truck for international flows is 403.9 kms")
+cm <- ggplot(dist1_cb_med, aes(DFlag, Trips)) + geom_bar(stat = "identity", aes(fill = factor(DFlag))) +
+   ggtitle("TLFD - International Mediums") + scale_fill_discrete(name="Distance Bands",
+                         labels=c("<50km", "50-100", "100-200", "200-500", "500-1000", "1000-2000", ">2000")) + 
+  theme(plot.title = element_text(size=10))  + theme(legend.title = element_text(size = 8)) + 
+  theme(legend.text = element_text(size = 6))
+print("The average distance travelled by a medium truck for international flows is 195.9 kms")
+
+grid.arrange(oh, om, ch, cm)
+
+```
+
+Generate the Cost Functions using the calibrated Betas. Different beta values were calculated for heavy and medium trucks for domestic and international travel.
+```{r}
+#' Domestic Cost FUnctions
+d_h <- -0.00332
+d_m <- -0.009442
+
+dist1_hvy <- transform(dist1_hvy, Cf = exp(d_h*dist1_hvy$Dist))
+dist1_med <- transform(dist1_med, Cf = exp(d_m*dist1_med$Dist))
+
+#' International Const FUnctions
+i_h <- -0.006311
+i_m <- -0.015388
+
+dist1_cb_hvy <- transform(dist1_cb_hvy, Cf = exp(i_h*dist1_cb_hvy$Dist))
+dist1_cb_med <- transform(dist1_cb_med, Cf = exp(i_m*dist1_cb_med$Dist))
+
+```
+
+Plot the cost functions. The **red** lines are for Domestic flows. The **blue** lines are for international flows. The **solid** lines represent Medium trucks, while the **dashed** lines are heavy trucks.
+```{r}
+
+p <- ggplot() + 
+  geom_line(data = dist1_hvy, aes(x = Dist, y = Cf), color="red", linetype = 2)+geom_point(color="red") + 
+  geom_line(data = dist1_med, aes(x = Dist, y = Cf), color="red", linetype = 1)+geom_point(color="red") +
+  
+  geom_line(data = dist1_cb_hvy, aes(x = Dist, y = Cf), color="blue", linetype = 2)+geom_point(color="blue") + 
+  geom_line(data = dist1_cb_med, aes(x = Dist, y = Cf), color="blue", linetype = 1)+geom_point(color="blue") +
+  ggtitle("Cost Functions for Domestic and International Flows categorized by Medium and Heavy Trucks")
+p
+
+```
+
+
+**Heavy** empty trucks are the most sensitive to distance, for **domestic** flows. 
+
+**Medium** trucks are more sensitive than heavy trucks to distance.
+
+
+Of the **Medium** empty trucks, **international** flows are more sensitive to distance than 
+**domestic** flows. 

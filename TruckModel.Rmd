@@ -1,0 +1,335 @@
+---
+title: "The story of Truck Forecasting on Hwy 427"
+author: "Mausam Duggal. WSP|PB, Systems Analysis"
+date: "May 17, 2016"
+output: html_document
+---
+
+```{r init, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr); library(ggplot2); library(knitr); library(gridExtra)
+```
+
+```{r Set Working Directory}
+opts_knit$set(root.dir = 'c:/projects/Hwy427')
+
+```
+
+##### This is a R Markdown document that brings together some of the Highway 427 forecasts prepared so far while attempting a Direct Demand Truck model as a function of **multivariate regression.**. The story is broken into three parts. 
+
+1. Reasonableness Checks
+2. Direct Demand Model for Truck Forecasts
+3. Expansion to Daily Truck Flows
+
+#### **Reasonableness Checks**
+
+We begin by batching in the dataset that has compiled the forecasts prepared so far for Hwy 427 using the GGHM3.0 and IO numbers. Of note, the GGHM3.0 numbers presented herein are those prepared by the MTO for the **Highway 427 Hight Occupancy Toll Lanes study.**
+
+```{r batchin in the forecasts dataset, echo=FALSE}
+forecast <- read.csv("c:/projects/Hwy427/Forecasts.csv", stringsAsFactors = FALSE)
+net <- read.csv("c:/projects/Hwy427/Emmenetwork.csv")
+net.sub <- read.csv("c:/projects/hwy427/hwycc.csv")
+  net.sub$vcratio <- net.sub$AMpkHRau/(net.sub$Lanes*net.sub$LaneCapacity)
+    net.sub <- subset(net.sub, vcratio!= 0)
+    net.sub <- transform(net.sub, tottrk = AMpdtrk_NL + MIDpdtrk_NL + PMpdtrk_NL) 
+```
+
+Let us plot the data and see if any patterns are visible. Specifically, do both the horizon years show exactly the same trend, which **could** imply a **heuristic** driven forecast as opposed to a pure **model derived** forecast.
+
+```{r plot 2021 and 2031 numbers, warning=FALSE, echo=FALSE}
+#' plot 2021 auto and truck peak hour volumes   
+  p.2021.seg <- ggplot(forecast, aes(x=AMautoPk21, y=AMtrkPk21, label = Segment)) +
+    geom_point(aes(size = AMtrkPk21,
+                       color= factor(Segment))) +     # Use hollow circles
+    scale_colour_hue(l=50) + 
+    facet_grid(Source ~ Dir)
+
+  p.2021.seg
+
+#' plot 2031 auto and truck peak hour volumes   
+  p.2031.seg <- ggplot(forecast, aes(x=AMautoPk31, y=AMtrkPk31, label = Segment)) +
+    geom_point(aes(size = AMtrkPk31,
+                       color= factor(Segment))) +     # Use hollow circles
+    scale_colour_hue(l=50) + 
+    facet_grid(Source ~ Dir)
+  
+  p.2031.seg
+
+#' Now arrange the above two plots
+
+#grid.arrange(p.2021.seg,p.2031.seg, ncol=1, nrow =2)
+  
+```
+
+The IO forecasts show a marked decrease between 2021 and 2031, in the NB direction. In the SB direction the numbers have either stayed constant from 2021 with minor increases or decreases depending upon the section of the highway being evaluated. This is an extremely unlikely scenario because high capacity and high speed corridors offer the path of least resistance and thus *volume loss* on the highway system points to a likely fundamental issue in the analysis. Further, none of the links under the IO forecast exceed their volume-to-capacity ratio. This is also highly unlikely given that macro models built so far for the Region have routinely indicated demand exceeding capacity on all the highways by 2031. 
+
+The GGHM3.0 on the other hand presents a relatively more reasonable picture of traffic volumes. It either maintains the 2021 volumes in 2031, specifically for sections of the Highway that are expected to have substantially increased their capacity, or exhibits a marginal increase in volumes. Highway 7 acts as an inflection point in truck flows, with a significant rise in truck forecasts between Highway 7 and Finch Avenue. A pattern seen in 2021 and 2031, signifiying that these forecasts could be based on some *heuristic* such as a flat percentage.  
+
+##### Now let us check what do the two forecasts (GGHM3.0 and IO) say about **truck percentages as a function of auto volumes.**
+
+```{r plot truck percentages by models to understand what if any pattern is visible, echo=FALSE}
+#' first 2021
+tk.2021 <- ggplot(forecast, aes(x = factor(Seg.no), y = TrkPct21, fill = Segment)) +
+  geom_bar(stat = "identity") + facet_wrap(Dir ~ Source)
+
+#' only keep the highway points to see what does the Cordon Count say about truck percentages
+net.sub.hy <- subset(net.sub, hwy == 1) %>% transform(., TrkPct11 = AMpkHRtrk_NL/AMpkHRau)
+
+cc.2011 <- ggplot(net.sub.hy, aes(x = factor(X), y = TrkPct11)) +
+  geom_bar(stat = "identity") + annotate("text", x = 40, y = 0.5, label = "Mean = 0.1 and Std.Dev = 0.07") +
+  geom_hline(yintercept=0.1, col="red", linetype="solid") + geom_hline(yintercept=0.17, col="red", linetype="dashed") +
+  geom_hline(yintercept=0.03, col="red", linetype="dashed")
+
+  # calcuate mean and standard dev
+  mean(net.sub.hy$TrkPct11)
+  sd(net.sub.hy$TrkPct11)
+
+#' now 2031
+tk.2031 <- ggplot(forecast, aes(x = factor(Seg.no), y = TrkPct31, fill = Segment)) +
+  geom_bar(stat = "identity") + facet_wrap(Dir ~ Source)
+
+
+grid.arrange(cc.2011, tk.2021,tk.2031, ncol=1, nrow =3)
+```
+
+There are some strange trends in the IO forecasts. While auto volumes between 2021 and 2031 have remained the same on some links, their truck volumes have falled by half. While in other cases, a drop in 2031 auto volumes has led to an increase in 2031 truck volumes for the same link. It is difficult to pinpoint what if any assumption was used in the IO forecasts, and their truck forecast trends seem to be counterintutive without further explanation from IO itself.
+
+The GGHM3.0 on the other hand presents far more reasonable trends, although some sections of the highway do witness a drop in 2031 truck volumes when compared to 2021 truck volumes while the 2031 auto volumes are forecasted to increase. Also, the increases in auto volumes between 2021 and 2031 outstrip the corresponding increase in truck volumes. 
+
+#### **Direct Demand Model for AM Peak Hour Truck Flows**
+
+The descriptive analysis of the two available forecasts i.e. GGHM3.0 and IO, have given us the confidence to reasonably question forecasts prepared by IO so far. Both of these forecasts were developed from a four-stage macro level model. This is a standard procedure for preparing strategic screenline level volumes, but when one considers project-level forecasts, significant enhancement to the granularity of the demand and supply of a model is warranted. Whether some of it was done when MTO prepared the GGHM forecasts presented herein is unknown. Thus, while it is difficult to know whether the GGHM truck forecasts are in the **correct** ballpark, the trend does not present confoundment.
+
+In a P3, such as that being developed for Highway 427, it is critical to be able to establish differing forecasts by deploying a myriad set of tools, which help establish a range of possible forecasts, rather than one number. Tools that can be tailored more easily to the project at hand. One such tool is a **Direct Demand Model (DDM).** In a DDM, an attempt is made to directly forecast truck volumes as a function of other traffic stream characteristics, all of which are currently being observed in the network. We have proposed a DDM that estimates **peak hour truck volumes**, using multi-variate regression of various input variables such as lanes, capacity, aut volume etc. Data for building such a DRM using the multi-variate regression was downloaded from the Cordon Count data for 2011 and the GGHM V4.0 model (under construction). These observed data points encompass 1562 locations across the Greater Toronto Area where truck volumes (heavy and medium) have been observed.
+
+
+Start by bathing in the GGHM V4.0 model dataset that shows link level and Cordon Count observed data.
+
+```{r batch in the GGHM4.0 model link level data}
+#' this data represents the link level attributes and the cordon count data currently in the GGHM4.0. The COrdon count data can be downloaded from the DMG website
+net <- read.csv("c:/projects/Hwy427/Emmenetwork.csv")
+```
+
+Take the batched in dataset and only keep those rows with a cordon count ID. Also, add in a total truck and total car column.
+
+```{r prepare the data, warning=FALSE}
+#' net.sub <- subset(net, CountID >0)
+#'   net.sub <- transform(net.sub, totauto = AMpdAU + MIDpdAU + PMpdAU) %>% 
+#'     transform(., tottrk = AMpdTRK + MIDpdTRK + PMpdTRK) %>%
+#'     transform(., hwy = 0)
+#' 
+#' #' populate dummy for highways and plotting highway points
+#'   net.sub$hwy[net.sub$VDF>=11 & net.sub$VDF<15] = 1
+#'   net.sub$cond = "reg"
+#'     net.sub$cond[net.sub$hwy==1] = "Hwy"
+#'     #' get rid of some outliers
+#'     net.sub <- subset(net.sub, AMpkHRtrk != 2338)
+#'     #' add vc ratio column
+#'     net.sub <- transform(net.sub, vcratio = AMpkHRau/Total_Capacity)
+#'       net.sub$vcratio[net.sub$hwy==0] <- 0    # only keep vc ratios on highways
+
+#' this is a revised and cleaned up file that takes the code commented above and writes it out as a CSV file. Then in excel it does a vlookup to bring in Nem's new data on the Cordon Count that eliminated all light trucks.
+net.sub <- read.csv("c:/projects/hwy427/hwycc.csv")
+  net.sub$vcratio <- net.sub$AMpkHRau/(net.sub$Lanes*net.sub$LaneCapacity)
+    net.sub <- subset(net.sub, vcratio!= 0)
+    net.sub <- transform(net.sub, tottrk = AMpdtrk_NL + MIDpdtrk_NL + PMpdtrk_NL) 
+
+```
+
+We aniticpate that totalautos should show a strong relationship with totaltrucks. Understanding the relationship between these two variables is also critical as the future auto volumes from the GGHMV3.0 model will serve as a primary input in truck forecasting for Highway 427.
+
+```{r create a scatter plot to see any relationship between 2011 peak hour auto and trucks output from the Cordon Count and compare it to those obtained from the IO and GGHM forecasts, warning=FALSE, echo=FALSE}
+
+#net.sub5k <- subset(net.sub, AMpkHRau < 5001) %>% subset(., AMpkHRtrk_NL!=0)
+
+  p.gghm <- ggplot(net.sub, aes(x=AMpkHRau, y=AMpkHRtrk, color = cond)) +
+    geom_point(shape=1) +    # Use hollow circles
+    scale_colour_hue(l=50) + 
+    geom_smooth() + ggtitle("2011 Cordon Count Data Analysis") + labs(x="2011 Peak Hr Autos", y="2011 Peak Hr Trucks")
+
+  p.gghm
+  
+#' also show the relationships in 2021 and 2031 IO and GGHM forecasts
+  p.2021 <- ggplot(forecast, aes(x=AMautoPk21, y=AMtrkPk21)) +
+    geom_point(aes(size = AMtrkPk21)) +     
+    scale_colour_hue(l=50) + geom_smooth(method=lm) +
+    facet_grid(Source ~ Dir) + ggtitle("2021 AM Peak Hour Auto vs Truck Comparison") + labs(x="2021 Peak Hr Autos", y="2021 Peak Hr Trucks")
+  
+  p.2021
+  
+  p.2031 <- ggplot(forecast, aes(x=AMautoPk21, y=AMtrkPk21)) +
+    geom_point(aes(size = AMtrkPk21)) +     
+    scale_colour_hue(l=50) + geom_smooth(method=lm) +
+    facet_grid(Source ~ Dir) + ggtitle("2031 AM Peak Hour Auto vs Truck Comparison") + labs(x="2031 Peak Hr Autos", y="2031 Peak Hr Trucks")
+
+  p.2031
+#' now arrange the plots
+
+    #grid.arrange(p.gghm, p.2021, p.2031, ncol=1, nrow=3)
+```
+
+A number of regression models were tested. Some had greater R-square values, but also greater intercepts. The structure below seemed to exhibit the best in terms of the list of explanatory variables and the R-square values.
+
+As can be seen in the summary, all of the variables have **very strong T-stat values**. The highway variable has the higest coefficient, but it is a dummy (0 or 1). The signs of the coefficients are also as expected with positive values indicating that a presence of that variable is generally positive for truck volumes.
+
+```{r kable}
+#' get rid of the zero values in the AMpkHRtrk_NL before running the regression equation
+net.sub <- subset(net.sub, AMpkHRtrk_NL!=0)
+
+fit <- lm(AMpkHRtrk_NL ~ Lanes + LaneCapacity + AMpkHRau + vcratio + hwy, data = net.sub)
+  summary(fit)
+  #' produce summary results
+  kable(summary(fit)$coef, digits=2)
+
+```
+
+Here we are plotting the model residuals vs the fit. In an ideal world, one would see the points all clustered around the **0 line.**
+
+```{r plot the residuals, echo=FALSE}
+ggplot(fit, aes(.fitted, .resid))+geom_point() + 
+  stat_smooth(method="loess")+geom_hline(yintercept=0, col="red", linetype="dashed") + 
+  xlab("Fitted values")+ylab("Residuals") + 
+  ggtitle("Residual vs Fitted Plot")+theme_bw() 
+```
+
+##### The above results from the **DDM** are very promising for forecasting truck flows. Thus, in the following section we have applied the DDM to the forecasts provided so far i.e. IO and GGHM3.0. Recall that the DDM needs *peak hour auto volume* as one of the inputs in the multi-variate equation, which were derived for each segment of Highway 427 as reported by IO and the GGHM3.0.
+
+```{r apply the DDM}
+
+#' use DRM to produce 2021 peak hour truck forecasts
+forecast$DDM21 <- -26.55 + 13.27*forecast$Lanes + 0.03*forecast$Capacity + 
+  0.04*forecast$AMautoPk21 - 23.85*forecast$VC21 + 129.14
+  
+#' use DRM to produce 2031 peak hour truck forecasts
+forecast$DDM31 <- -26.55 + 13.27*forecast$Lanes + 0.03*forecast$Capacity + 
+  0.04*forecast$AMautoPk31 - 23.85*forecast$VC21 + 129.14
+
+#' print the table showing the outputs
+kable(forecast, digits=0)
+
+```
+
+Now let us plot how the DDM stacks up against the IO and GGHM3.0 forecasts.
+
+```{r plot the DDM results against IO and GGHM, echo=FALSE, warning=FALSE}
+
+forecast <- transform(forecast, Diff21 = AMtrkPk21 -DDM21) %>% 
+    transform(., Diff31 = AMtrkPk31 -DDM31)
+
+diff.21 <- ggplot(forecast, aes(x=Seg.no, y=Diff21))+geom_line(color="grey")+geom_point(color="red")+
+  ggtitle("2021 AM Peak Hour Truck Forecast Differences (Macro - DDM Forecasts)") + facet_wrap(Dir~Source) +
+  geom_hline(yintercept = 0, color = "blue") + scale_x_discrete(labels=c("SouthFinch-Finch", "Finch-Hwy407",
+                              "Hwy407-Hwy7", "Hwy7-Langstaff", "Langstaff-Rutherford",
+                              "Rutherford-MajMac" )) + theme(axis.text.x = element_text(angle=90, vjust=0.5, size=8))
+
+diff.21
+
+# plot the differences of forecasts
+diff.31 <- ggplot(forecast, aes(x=Seg.no, y=Diff31))+geom_line(color="grey")+geom_point(color="red")+
+  ggtitle("2031 AM Peak Hour Truck Forecast Differences (Macro - DDM Forecasts)") + facet_wrap(Dir~Source) +
+  geom_hline(yintercept = 0, color = "blue") + scale_x_discrete(labels=c("SouthFinch-Finch", "Finch-Hwy407",
+                              "Hwy407-Hwy7", "Hwy7-Langstaff", "Langstaff-Rutherford",
+                              "Rutherford-MajMac" )) + theme(axis.text.x = element_text(angle=90, vjust=0.5, size=8))
+
+diff.31
+
+#' Now arrange the above two plots
+
+#grid.arrange(diff.21,diff.31, ncol=1, nrow =2)
+
+
+```
+
+The dialogue presented before noted that the IO forecasts were counter intuitive. Thus, in the subsequent plots we are only comparing the AM peak hour truck forecasts from the DDM to the GGHM3.0 numbers.
+
+```{r plot the DDM against GGHM3.0, echo=FALSE, warning=FALSE}
+#' strip away unnecessary fields in the dataframe
+
+#' also remove the rows corresponding to the IO forecasts
+fore1 <- select(forecast, c(Segment, Source, Seg.no, Dir, AMtrkPk21, AMtrkPk31, Daily21Trucks, Daily31Trucks, DDM21, DDM31)) %>%
+  subset(., Source == "GGHM")
+
+#' reset the table values
+  fore1$Source <- "DDM"
+  fore1$AMtrkPk21 <- fore1$DDM21
+  fore1$AMtrkPk31 <- fore1$DDM31
+  fore1$Daily21Trucks <- 0
+    fore1$Daily31Trucks <- 0
+
+  #' bind the dataframes together
+common.names <- intersect(colnames(forecast), colnames(fore1))
+combined.database <- rbind(forecast[, common.names], fore1[, common.names]) %>% subset(., Source != "IO")
+
+  combined.database$DDM21 <- 0
+  combined.database$DDM31 <- 0
+
+#' now plot all the truck forecasts by Segment
+  ggplot(data=combined.database, aes(x=Seg.no, y=AMtrkPk21)) +
+    geom_bar(aes(fill=Source),stat = "identity") + facet_wrap(~ Dir) + scale_x_discrete(labels=c("1" = "SouthFinch-Finch", "2" = "Finch-Hwy407", "3" = "Hwy407-Hwy7", "4" = "Hwy7-Langstaff", "5" = "Langstaff-Rutherford", "6" = "Rutherford-MajMac" )) + theme(axis.text.x = element_text(angle=90, vjust=0.5, size=8)) + ggtitle("2021 DDM and 2021 GGHM 3.0 forecasts")
+  
+  #' now plot all the truck forecasts by Segment
+  ggplot(data=combined.database, aes(x=Seg.no, y=AMtrkPk31)) +
+    geom_bar(aes(fill=Source),stat = "identity") + facet_wrap(~ Dir) + scale_x_discrete(labels=c("1" = "SouthFinch-Finch", "2" = "Finch-Hwy407", "3" = "Hwy407-Hwy7", "4" = "Hwy7-Langstaff", "5" = "Langstaff-Rutherford", "6" = "Rutherford-MajMac" )) + theme(axis.text.x = element_text(angle=90, vjust=0.5, size=8)) + ggtitle("2031 DDM and 2031 GGHM 3.0 forecasts")
+  
+  
+```
+
+#### **Expansion to Daily Truck Flows**
+
+##### Now let us examine if the AM peak hour truck volumes can be expanded to the daily numbers by developing a relationship from observed data. Once again we will use the Cordon Count data. 
+
+```{r Plot Daily Trucks vs AM Peak Hour trucks, echo=FALSE}
+#' plot total daily trucks by those in the peak hour
+#' Update the total trucks column to not include light trucks
+
+  ggplot(net.sub, aes(x=tottrk, y=AMpkHRtrk)) +
+    geom_point(aes(size = tottrk)) +     # Use hollow circles
+    scale_colour_hue(l=50) + geom_smooth(method = lm)
+
+```
+
+There seems to be a strong linear relationship. So, let us try and model it, using multivariate linear regression from the Cordon Count data
+
+```{r kable1}
+
+  fit.daily <- lm(tottrk ~ AMpkHRtrk + hwy, data = net.sub)
+summary(fit.daily)
+
+  #' produce summary results
+kable(summary(fit.daily)$coef, digits=2)
+
+```
+
+Now convert the forecasted AM peak hour truck flows from the DDM to Daily truck flows by segment and plot values from the DDM and GGH3.0
+
+```{r Apply the multivariate regression eq}
+
+combined.database1 <- subset(combined.database, Source == "DDM") 
+  combined.database1$Daily21Trucks <- 8.24 + 5.28*combined.database1$AMtrkPk21 + 1170
+  combined.database1$Daily31Trucks <- 8.24 + 5.28*combined.database1$AMtrkPk31 + 1170
+
+```
+
+Plot total daily trucks forecasted by DDM and compare to those from the GGHM3.0 by 2021 and 2031
+
+```{r Daily Truvk vols comparison, echo=FALSE}
+
+    #' bind the dataframes together
+common.names <- intersect(colnames(combined.database), colnames(combined.database1))
+combined.database2 <- subset(combined.database, Source != "DDM") 
+combined.database2 <- rbind(combined.database2[, common.names], combined.database1[, common.names]) 
+  combined.database2 <- combined.database2[-c(9:10)] #### drop empty cols
+
+#' print the table showing the outputs
+kable(combined.database2, digits=0)
+  
+
+#' plot total daily trucks forecasted by DDM and compare to those from the GGHM3.0 by 2021 and 2031
+
+  ggplot(data=combined.database2, aes(x=Seg.no, y=Daily21Trucks)) +
+    geom_bar(aes(fill=Source),stat = "identity") + facet_wrap(~ Dir) + scale_x_discrete(labels=c("1" = "SouthFinch-Finch", "2" = "Finch-Hwy407", "3" = "Hwy407-Hwy7", "4" = "Hwy7-Langstaff", "5" = "Langstaff-Rutherford", "6" = "Rutherford-MajMac" )) + theme(axis.text.x = element_text(angle=90, vjust=0.5, size=8)) + ggtitle("2021 DDM and 2021 GGHM 3.0 Daily Truck Forecasts")
+  
+  ggplot(data=combined.database2, aes(x=Seg.no, y=Daily31Trucks)) +
+    geom_bar(aes(fill=Source),stat = "identity") + facet_wrap(~ Dir) + scale_x_discrete(labels=c("1" = "SouthFinch-Finch", "2" = "Finch-Hwy407", "3" = "Hwy407-Hwy7", "4" = "Hwy7-Langstaff", "5" = "Langstaff-Rutherford", "6" = "Rutherford-MajMac" )) + theme(axis.text.x = element_text(angle=90, vjust=0.5, size=8)) + ggtitle("2031 DDM and 2021 GGHM 3.0 Daily Truck Forecasts")
+
+```
+

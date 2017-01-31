@@ -1,0 +1,233 @@
+---
+title: "Peel Accident Analysis"
+author: "Mausam Duggal, WSP|PB, Systems Analysis"
+date: "June 25, 2016"
+output: html_document
+---
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(ggplot2); library(knitr); library(lubridate); library(foreign); library(gtools)
+```
+
+### Mining of Peel's Truck Collison Data
+
+This analysis focuses on the truck collison data that the Region of Peel provided to the team as part of the study. The intention is to mine the data and spot any obvious trends that might be seen. Going in to the data analysis, I initially thought that we would see relatively higher accidents in the winter season, with fewer in the summer as daylight savings time and a longer day in general would improve visibility. 
+
+In the final analysis, it is our intention to geocode these locations on to a GIS network and tag the daily volumes to these locations. Once that is done, we would like to explore a mathematical relationship between volume, season, hour, and daily flows on the rate of accidents.
+
+We have not as yet geocoded the data, but the current analysis is the first step in the process.
+
+
+#### INPUT DATA
+
+We start by setting the **input directory** and loading the datasets and mining it in the hope of seeing some interesting patterns.
+
+```{r Set Working Directory}
+opts_knit$set(root.dir = 'c:/personal/r')
+```
+
+
+```{r I am sick and tired of NAs so a function to set them for good}
+
+f_rep <- function(df) {
+  # this function is used to set all NA values to zero in a dataframe
+df[is.na(df)] <- 0
+return(df)
+}
+
+```
+
+
+```{r batching in the DAY and HOUR dataset}
+#' master file
+acc <- read.csv(file = "c:/personal/r/PeelAccidents.csv", stringsAsFactors = FALSE)
+
+#' now extract the month and time and create two new columns for the same
+acc$month <- month(as.POSIXlt(acc$Accident.Date, format="%m/%d/%Y"))
+acc$hour <- sapply(strsplit(acc$Accident.Time, ":"), "[", 1)
+
+#' convert hour column to numeric for sorting  
+acc$hour <- as.numeric(acc$hour)
+  acc <- subset(acc, hour!= "Unknown") %>% .[order(.$hour, .$month),]
+  
+# create queries for populating the season field	
+mut1 <- acc$month >= 3 & acc$month <= 5
+mut2 <- acc$month >= 6 & acc$month <= 8
+mut3 <- acc$month >= 9 & acc$month <= 11
+mut4 <- acc$month >= 1 & acc$month <= 2 | acc$month == 12
+
+# populate the season field
+acc[mut1, "season"] <- "Spring"
+acc[mut2, "season"] <- "Summer"
+acc[mut3, "season"] <- "Fall"
+acc[mut4, "season"] <- "Winter"
+  
+```
+
+#### GO ALL IN AND SEE WHAT THE DATA SAYS
+
+Now lets plot the variables and see what the data shows. The first attempt will just **plot the accident counts by season, year, and hour.**
+
+```{r Now plot the data}
+
+#' Other than 2015, the highest count of accidents across any given hour takes place in either Fall, Spring, or SUmmer 
+#' WInter by far seems to have the lowest truck accidents, although 2015 stands out marginally.
+#' Interestingly, 2015 Summer and Spring are the lowest accident seasons from 2011 onwards.
+
+ggplot(acc, aes(hour, fill = season)) +
+  geom_histogram(binwidth = 1) + facet_grid(Accident.Year~season)
+
+
+```
+
+#### FOCUS ON WINTER AND SPRING
+
+**Spring and Winter** are interesting. One would expect that these two seasons to have more unique patterns given the uncertain weather. 
+
+```{r Winter/Spring patterns}
+
+#' only keep spring and winter records
+acc.filter <- subset(acc, season == "Winter" | season == "Spring")
+
+#' plot to see if there is a pattern of accidents during the peak periods.
+#' Represent the middle of the peak period by black lines.
+#' There does not seem to be a significant spike in accidents during the peak periods and this could be attributed to the fact that truck traffic is generally
+#' lower at that time. It is between those two lines that the bulk of the accidents seem to be takin place. 
+
+ggplot(acc.filter, aes(hour, fill = season)) +
+  geom_histogram(binwidth = 1) + facet_grid(season~Accident.Year) +
+    geom_vline(xintercept = 8, color = "black") +
+    geom_vline(xintercept = 17, color = "black")
+
+```
+
+```{r fall patterns}
+
+acc.filter1 <- subset(acc, season == "Fall")
+
+#' plot to see if there is a pattern of accidents during the peak periods.
+#' Represent the middle of the peak period by black lines.
+#' There does not seem to be a significant spike in accidents during the peak periods and this could be attributed to the fact that truck traffic is generally
+#' lower at that time. It is between those two lines that the bulk of the accidents seem to be takin place. 
+
+ggplot(acc.filter1, aes(hour, fill = season)) +
+  geom_histogram(binwidth = 1) + facet_grid(.~Accident.Year) +
+    geom_vline(xintercept = 8, color = "black") +
+    geom_vline(xintercept = 17, color = "black")
+
+```
+
+#### What do we know so far?
+
+I did not know what to expect when I started this analysis. But, the results so far seem to suggest that the bulk of the accidents take place during the off-peak, suggesting that the accidents are more a function of the increase in truck traffic on the road during the off-peaks then it is due to an increase of regular commuter flows as one would get during the morning and evening peak periods.
+
+#### Geographical Constraints
+
+Now let's batch in the geocoded locations that Kitty has put together that are also spatially matched the GGHV4 network.
+```{r}
+
+peel <- read.dbf("c:/personal/r/AllPeelCollisions_spatialjoin1.dbf") %>% subset(., Classifica != "04 - Non-reportable")
+links <- read.dbf("c:/personal/r/Peel_links.dbf")
+
+```
+
+Plot the results by link speed, capacity, and lanes
+```{r}
+
+ggplot(peel, aes(DATA2, fill = factor(DATA3))) + geom_histogram(binwidth = 5) + facet_grid(. ~ LANES) +  xlab("Speed (km/hr)") + ggtitle("Accident distribution by link speed, capacity, and lanes") + labs(fill = "Capacity")
+
+
+```
+
+### Logistic Regression
+
+Now let's look into developing a logistic regression model with the primary aim being to assign a probability to each link of whether it would witness an accident. If the probability is over 0.5, then that link has an increasing chance of being a ** collison hotspot.** 
+
+```{r}
+
+# develop the dependent variable, where all accident records are coded as 1 and 0 for the rest. Also create some other variables
+peel = transform(peel, Dep = 1) %>% transform(., Spd = ifelse(LENGTH/(TIMAU/60) > 59, 1, 0)) %>% transform(., vc = ifelse(VOLAU/(DATA3*LANES) < 1.0,0,1)) %>% transform(., lsq = LANES*Spd)
+
+```
+
+
+```{r This code block creates all the necessary variables in the spatially matched data as well as links in Peel}
+#' firs for the spatial data
+peel$Season <- acc$season[match(peel$Accident_N, acc$Accident.No.)]
+  peel$PP <- acc$hour[match(peel$Accident_N, acc$Accident.No.)]
+  peel <- transform(peel, weather = ifelse(Season == "Winter", 1, 0))
+  peel <- transform(peel, ff = (LENGTH/DATA2)*60)
+  peel <- transform(peel, int = VOLAU*TIMAU)
+  peel <- transform(peel, rat = TIMAU/ff)
+  peel <- transform(peel, timau = TIMAU)
+  peel <- transform(peel, hr = ifelse(PP>9 & PP<16, 1, 0))
+  peel <- transform(peel, vkt = VOLAU*LENGTH)
+  peel <- transform(peel, vol = VOLAU)
+
+# clean the data
+peel1 <- peel[, c(31,37,40,41,80:93)]
+peel2 <- na.omit(peel1)
+
+#' next for all the links in Peel region
+links$Season <- "none"
+  links$PP <- 100
+  links <- transform(links, weather = ifelse(Season == "Winter", 1, 0))
+  links <- transform(links, ff = (LENGTH/DATA2)*60)
+  links <- transform(links, int = VOLAU*TIMAU)
+  links <- transform(links, rat = TIMAU/ff)
+  links <- transform(links, timau = TIMAU)
+  links <- transform(links, hr = 0)
+  links <- transform(links, vkt = VOLAU*LENGTH)
+  links <- transform(links, vol = VOLAU)
+  links = transform(links, Dep = 0) %>% transform(., Spd = ifelse(LENGTH/(TIMAU/60) > 59, 1, 0)) %>% 
+    transform(., vc = ifelse(VOLAU/(DATA3*LANES) < 1.0,0,1)) %>% transform(., lsq = LANES*Spd)
+  
+#' only keep the non-common links
+links1 <- anti_join(links, peel2, by="ID")
+
+#' Now create the estimation data
+peel3 <- smartbind(peel2,links1) %>% .[, 1:18]
+peel4 <- f_rep(peel3)
+  # some additional variables
+  peel4$ccap <- peel4$DATA3*peel4$LANES
+  peel4$lsq <- peel4$LANES * peel4$DATA2
+  peel4 <- transform(peel4, art = ifelse(DATA3 >799 & DATA3<1200, 1, 0))
+
+
+```
+
+
+```{r Test the logistic model}
+# the variables are as follows:
+  # rat - ratio of Congested time over Free Flow time
+  # art - dummy for identifying arterial classification
+  # ccap - corridor capacity i.e. lanes * lane capacity
+  # vol - loaded auto volumes
+
+model <- glm(Dep ~ rat + art + ccap + vol, family = binomial(link = 'logit'), data = peel4) 
+summary(model)
+  
+```
+
+```{r Look at the coefficients table}
+
+#' produce summary results
+kable(summary(model)$coef, digits=6)
+
+```
+
+
+```{r Check model application}
+# get model prediction
+p <- as.data.frame(predict(model, peel4, type="response"))
+text <- "Prob"
+  colnames(p) <- text
+
+# bind the predicted probabilities
+peel4 <- cbind(peel4, p)
+
+# only get those records that had a DEP == 1, which means that an accident was recorded at that link. This is just to check how well the predictions have actually performed.
+check <- subset(peel4, Dep == 1) 
+
+```
+

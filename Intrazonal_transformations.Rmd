@@ -1,0 +1,80 @@
+---
+title: "Intrazonal calculations"
+author: "Mausam Duggal"
+date: "August 29, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(knitr); library(reshape2); library(forecast)
+
+wd <- setwd("c:/personal/r")
+```
+
+## First round of intrazonal estimate calculations
+
+This markdown document calculates intrazonal times for the provincial model. The basic philosophy is based on selecting the four or **user defined** nearest neighbor Quads and estimating their average values and then halving it.
+
+In addition, a max upper bound for the intrazonal time is also added because certain Quads up in the north witness signficant times and thus the skim times are not normally distributed. The max time currently is set at 10 mins. It can be changed and potentially down the road a more automated upper bound will be generated.
+
+```{r skim}
+skim <- read.csv("mf100.csv", stringsAsFactors = FALSE, nrows = 6495, 
+                 header = TRUE) %>% .[1:6496]    # limit the matrix to Quad
+```
+
+
+```{r}
+#' convert to long format and get rid of zeros that represent the intra-Quads
+skim1_long <- melt (skim, id.vars = "p.q..val.") %>%
+  setNames(., c("Origin", "Dest", "Ttime")) %>% subset(., Ttime !=0) %>% 
+  .[order(.$Origin, .$Ttime), ]
+```
+
+
+```{r nearest neighbor calculation for first Origin by index}
+#' user defined value for number of zones to search for intrazonal time
+val = 4
+#' get list of zones for enumeration
+lst <- unique(skim$p.q..val.)
+
+#' get first intrazonal time for Origin at index 1
+intra <- subset(skim1_long, Origin == lst[1]) %>% .[1:val, ]
+mean <- intra %>% group_by(Origin) %>% summarise(Intratime = mean(Ttime)/2)
+
+```
+
+
+```{r add in the nearest neighbor calculations for the rest}
+
+for (i in 2:length(lst)){
+  # loop through the remaining quads and compute the average and then bind
+  # it together.
+  intra1 <- subset(skim1_long, Origin == lst[i]) %>% .[1:val, ]
+  mean1 <- intra1 %>% group_by(Origin) %>% summarise(Intratime = mean(Ttime)/2) 
+  
+  #' bind the values
+  mean <- rbind(mean, mean1)
+}
+
+```
+
+
+```{r}
+# Now check if value exceeds max cap for intrazonals. If it does, then replace
+# otherwise keep computed value.
+
+max = 10
+
+mean1 <- transform(mean, Intratime = ifelse(Intratime <= max, mean$Intratime, 10))
+
+write.csv(mean1, "intrazonaltimes.csv", row.names = FALSE)
+
+```
+
+
+
+

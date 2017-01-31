@@ -1,0 +1,167 @@
+---
+title: "Mausam Duggal"
+author: "Use the Border survey to create external trip matrix for GGHM 4.0"
+date: "July 14, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(ggplot2); library(knitr); library(rgeos); library(ggmap); 
+library(rgdal); library(sp); library(png); library(spatialEco); library(data.table)
+```
+
+Set working directory to start the process
+```{r Set Working Directory}
+# opts_knit$set(root.dir = 'c:/personal/r')
+ wd <- setwd("c:/personal/r")
+```
+
+Batch in the Border survey and the **SurveysAll** table in that database. Clean it to get **rid of Weekend** travel. Interestingly enough, trips were only counted from **8:00 a.m. onwards. This could cause some underreporting.** 
+
+```{r batch in the Border survey}
+
+# read the file in its raw format after saving it out as a CSV
+bd <- read.csv("BorderSurveys.csv", stringsAsFactors = FALSE)
+
+  # Now only keep the Weekday travel and trips between 600 and 900
+  bd_wd <- subset(bd, Weekday.Weekend == "Weekday") %>% subset(., Hour > 5 & Hour < 9)
+  bd_wd[is.na(bd_wd)] <- 0
+  
+```
+
+As one will see, once we get rid of the weekend trips and restrict the records to the a.m. peak period we are left with very few trips.
+
+```{r print the summary before beginning the data processing}
+
+print(paste0("Trips reported in the peak hour are a total of ", sum(bd_wd$ExpFac_hr)))
+
+```
+
+
+Clean out any unnecssary columns summarise the total trips. One thing to note here is that unlike the Simcoe and Peterborough surveys, if a trip was captured at any of the bridge, it would have to pass through the GGH area. Thus we can eliminate the possibility of external-external trips that might be captured by the border survey and do not cross the GGHM; a possibility we could not ignore in the other two surveys.
+
+```{r only keep relevant columns}
+# create column list to keep
+
+keeps <- c("Month", "Day", "Hour", "Direction", "Location", "O1.TAZ", "O2.TAZ", "D1.TAZ", "D2.TAZ", "ExpFac_hr", 
+           "O1_Lat", "O1_Long", "D1_Lat", "D1_Long")
+
+bd_wd1 <- bd_wd[keeps]
+  bd_wd1[is.na(bd_wd1)] <- 0
+
+#' also bring in the GGHM externals based on the bridge in question
+bridge <- c(
+  "Rainbow Bridge" = 9502,         
+  "Whirlpool Bridge" = 9503,        
+  "Peace Bridge" = 9501,         
+  "Queenston-Lewiston Bridge" = 9504
+)
+
+#' transfer over the GGHM external IDs 
+bd_wd2 <- transform(bd_wd1, GGHEx = ifelse(bd_wd1$Location == "Rainbow Bridge", 9502,
+                                           ifelse(bd_wd1$Location == "Whirlpool Bridge", 9503,
+                                                  ifelse(bd_wd1$Location == "Peace Bridge", 9501, 9504))))
+
+#print the results
+
+print(paste0("The Border Survey points to a total of ", sum(bd_wd1$ExpFac_hr), " external trips, in the morning peak period"))
+
+```
+
+Now add the final O and D for those trips that have one end within the GGHM and the other on one of the bridges
+
+```{r create the final trip ends by GGHM TAZ}
+
+#' first, for trips that have one trip end within the GGHM and the other is one of the bridges
+bd_wd2 <- transform(bd_wd2, Origin = ifelse(bd_wd2$Direction == "Into Canada", bd_wd2$GGHEx, 
+                                            ifelse(bd_wd2$Direction == "Into U.S.", ifelse(bd_wd2$O2.TAZ > 0, 
+                                                                                           bd_wd2$O2.TAZ, bd_wd2$O1.TAZ), 0))) 
+
+bd_wd2 <- transform(bd_wd2, Dest = ifelse(bd_wd2$Direction == "Into U.S.", bd_wd2$GGHEx,
+                                            ifelse(bd_wd2$Direction == "Into Canada", ifelse(bd_wd2$D2.TAZ > 0, 
+                                                                                             bd_wd2$D2.TAZ, bd_wd2$D1.TAZ), 0)))
+                                          
+```
+
+Select records that have one trip end outside the GGHM and export it out to geocode in ArcMap and also do a point-to-point assingment
+
+```{r subset records with one trip end out of the GGHM}
+
+#' assign unique IDs to all unique records based on LatLong
+bd_wd2 <- transform(bd_wd2, un = paste0(bd_wd2$O1_Lat, bd_wd2$O1_Long, bd_wd2$D1_Lat, bd_wd2$D1_Long))
+
+  # group by lat long and create unique values
+  gr <- bd_wd2 %>% group_by(O1_Lat, O1_Long, D1_Lat, D1_Long) %>% summarise(c = n())
+    gr <- transform(gr, un = paste0(gr$O1_Lat, gr$O1_Long, gr$D1_Lat, gr$D1_Long)) %>% 
+      transform(., id = seq(1, nrow(gr))) %>% subset(., select = c(un, id))
+
+#' join back the ID field
+bd_wd2 <- merge(bd_wd2, gr, by.x = "un", by.y = "un", all.x = TRUE)
+
+#' batch out the file for mapping in ArcMap
+bd_out <- subset(bd_wd2, Origin == 0 | Dest == 0)
+write.csv(bd_out, "border_out.csv")
+
+```
+
+Now batch in the spatially matched files from ArcMap. These shapefiles have been spatially matched to the nearest external GGHM zone.
+
+```{r batch in the files}
+
+#' first batch in the shapefiles that are needed for the spatial joins
+orig <- readOGR(wd, "Border_Origin_Ext")
+dest <- readOGR(wd, "Border_Dest_Ext")
+
+orig_df <- orig@data %>% subset(., select = c(id, Origin))
+  #setnames(orig_df, "ID_1", "NOrig")
+dest_df <- dest@data %>% subset(., select = c(id, Dest))
+  #setnames(dest_df, "ID_1", "NDest")
+
+```
+
+Now join back the GGHM external ID for each of the missing locations back to the main database
+
+```{r join back the GGHM external information}
+
+# join the GGHM externals
+bd_wd3 <- merge(bd_wd2, orig_df, by = "id", all.x = TRUE)
+bd_wd3 <- merge(bd_wd3, dest_df, by = "id", all.x = TRUE)
+
+# set all NA to zero
+bd_wd3[is.na(bd_wd3)] <- 0
+
+#' now reset all the zones
+bd_wd3 <- transform(bd_wd3, Origin = bd_wd3$Origin.x + bd_wd3$Origin.y) %>% 
+  transform(., Dest = bd_wd3$Dest.x + bd_wd3$Dest.y)
+
+# sum trips and only keep relevant columns
+bd_wd4 <- bd_wd3 %>% group_by(Origin, Dest) %>% summarise(FTrips = sum(ExpFac_hr)) %>% 
+  transform(., join = paste0(Origin, Dest))
+
+
+```
+
+Expand the peak hour surveys to the peak period using the counts observed at the border crossing and as provided by Mauricio on July 15, 2016
+
+```{r expand to peak period}
+
+# multiply by 0.43 to go to peak period
+
+bd_wd4$PP_FTrips <- bd_wd4$FTrips/0.43
+
+write.csv(bd_wd4, "FinalBorder.csv")
+
+```
+
+Report the **results of all the data analysis.**
+
+```{r summary of the results}
+
+print(paste0("The total peak period trips captured at the border stations were ", sum(bd_wd4$PP_FTrips)))
+
+```
+

@@ -1,0 +1,95 @@
+## A quick comparison of the first four assignment tests
+_A quick recap of Mausam's results_ | `r date()`
+
+```{r init, echo=FALSE, message=FALSE}
+library(stringr); library(data.table); library(dplyr); library(ggplot2)
+```
+
+<br>
+Mausam has run tests of several volume-delay functions with the GGHM3 AM peak hour trip matrix provided by MTO and the GGHM4 highway network (a work in progress). The Emme second-order linear appoximation (SOLA) assignment module was used for each scenario. The scenarios tested so far include:
+
+- Scenario 1: Using the currently coded freeflow speeds and capacities with the TMG tangential function
+- Scenario 2: Freeflow speeds and capacities were reset to the default values for each volume-delay function stipulated in the 2011 Network Coding Standards (NCS11), and assigned using the TMG tangential function
+- Scenario 3: The NCS11 speeds and capacities were used in conjunction with the default BPR function (alpha=0.15 and beta=4.0 for all link classes)
+- Scenario 4: The NCS11 speeds and capacities were used in conjunction with modified coefficients for the BPR function, in order to better replicate speed-flow relationships from congested areas
+
+Mausam exported selected attributes, including assigned auto flows (volau) for links with counts available. We combined them into a single file for further analyses:
+
+```{r read_link_data}
+SCENARIOS <- 1:4
+combined <- data.table()
+for (scenario in SCENARIOS) {
+    filename <- str_c("Sc", scenario, ".txt")
+    raw <- read.table(filename, header=TRUE)
+    raw <- mutate(raw, Scenario = scenario, Count = X.amphr, error_squared = (Count-volau)**2)
+    combined <- rbind(combined, raw)
+}
+combined$vdf <- factor(combined$vdf)
+```
+
+### Scattergram comparisons
+We can get a sense of how well each of the scenarios replicates the counts, as well as the incidence of outliers, by constructing and visually comparing scattergrams for each scenario. We will color the points by volume-delay function, which in the case of NCS11-compliant networks defines both area type and roadway functional classification:
+
+```{r scattergrams}
+Q <- ggplot(combined, aes(x=Count, y=volau, colour=vdf))
+Q + geom_abline(colour="grey", slope=1, intercept=0) + geom_point() +
+    facet_wrap(~Scenario, ncol=2) + labs(title="Scattergram by scenario")
+```
+
+There is no apparent difference between the patterns, which is surprising. It was expected that recoding the freeflow speeds and capacities to uniform values within each volume-delay function category would result in significant differences in link loadings. Thus, a discernable difference between Scenarios 1 and 2 was expected. The finding to the contrary might be expected in an uncongested network, but surprising within the GGH. Likewise, changes in coefficient values for the BPR function (Scenario 3 versus 4) were expected to produce significant changes, especially given that different values were used for freeways versus other roadway types.
+
+The lack of differences between assignment patterns based upon different VDF formulations (Scenario 2 versus 3) is less surprising. The tangential function was likely used to reach convergence quicker by dampening increases in link trave times in the notional region when volume exceeds capacity (i.e., V/C>1.0). The SOLA assignment approach is more efficient and less sensitive to large differences in link travel times between iterations. Moreover, the same coefficients are used for all link types. They can be tuned in calibration to adjust the relative attractiveness of certain link types to other. 
+
+### Statistical summaries by link classification
+We can calculate root mean square error (RMSE) by volume-delay function, as well as for the entire network. This defines the average difference between the assigned and counted link flows for any given period (the AM peak hour, in this case). RMSE by itself does not define the extent of the difference. A normalized RMSE can be calculated by dividing RMSE by the average count within each category (volume-delay function, in this case). We calculate these measures for all of the scenarios:
+
+```{r tabular_summaries}
+# Define a function to compile the statistics of interest
+net_summary <- function(DT) {
+    DT %>% summarise(n = n(), mean_count = round(mean(Count), 1),
+            rmse = round(sqrt(sum(error_squared)/max(1, n()-1)), 1)) %>%
+        mutate(n_rmse = round(rmse/mean_count, 2))
+}
+
+# Write a summary table for each scenario
+for (scenario in SCENARIOS) {
+    print(str_c("Results for Scenario ", scenario), quote=FALSE)
+    D1 <- net_summary(filter(combined, Scenario==scenario) %>% group_by(vdf))
+    D2 <- net_summary(filter(combined, Scenario==scenario)) %>%
+        mutate(vdf = "Total")
+    D3 <- rbind(arrange(D1, vdf), D2)
+    print(D3)
+}
+```
+
+The differences between the scenarios are quite small. We can safely forgo formal testing and assert that there is are no statistically significant differences between them. The normalized RMSE values look comparable to other models with the exception of VDF 14 and 43. The former value is outside of the range typically considered acceptable given it's average count. The latter has too few observations to draw useful conclusions about, and should be ignored.
+
+### Statistical summaries by volume groups
+A similar analysis can be carried out by volume groups rather than link classification using the same code:
+```{r volume_class}
+INTERVAL_SIZE <- 1500
+combined$count_range <- cut(combined$Count, 
+    breaks = seq(-1, max(combined$Count)+INTERVAL_SIZE*0.5, INTERVAL_SIZE))
+# Write a summary for each scenario
+summaries <- data.table()
+for (scenario in SCENARIOS) {
+    print(str_c("Results for Scenario ", scenario), quote=FALSE)
+    D1 <- net_summary(filter(combined, Scenario==scenario) %>% group_by(count_range))
+    D2 <- net_summary(filter(combined, Scenario==scenario)) %>% mutate(count_range = "Total")
+    D3 <- rbind(arrange(D1, count_range), D2)
+    D3$Scenario <- scenario
+    print(D3)
+    summaries <- rbind(summaries, D3)
+}
+summaries$Scenario <- factor(summaries$Scenario)
+```
+
+In this case we save the summary statistics in order visualize the relationship between the normalized RMSE and counts by volume group:
+
+```{r visualize_volume_groups}
+pare <- filter(summaries, count_range!="Total")
+U <- ggplot(pare, aes(x=mean_count, y=n_rmse, colour=count_range, shape=Scenario))
+U + geom_point()
+```
+
+The normalized RMSE drops as the count increases, which is the desired pattern. The points are clustered along the _x_ axis at the midpoints of the calculated intervals (with an interval size of `r INTERVAL_SIZE` in this case). 

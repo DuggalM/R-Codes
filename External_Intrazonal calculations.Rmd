@@ -1,0 +1,189 @@
+---
+title: "Generate intrazonal times (minutes) for external zones"
+output: html_notebook
+author: "Mausam Duggal"
+date: "Oct 5, 2016"
+---
+
+#### Set the libraries needed
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(knitr); library(reshape2); library(foreign); library(ggplot2); library(DT); library(png); library(sp); 
+library(rgdal); library(SpatialTools)
+
+```
+
+```{r "setup", include = FALSE}
+
+opts_knit$set(wd = "c:/personal/r")
+
+```
+
+
+#### Batch in the External zone shapefile
+
+The intention is to randomly generate points within each external polygon shapefile and estimate their euclidean distance. This is similar to the approach proposed in the paper *A possible solution for the centroid-to-centroid and intra-zonal trip length problems*. Of note, the random nature of the algorithm means that the intra-distance can change when run every time.
+
+First set a function for NAs.
+
+```{r I am sick and tired of NAs so a function to set them for good}
+
+f_rep <- function(df) {
+  # this function is used to set all NA values to zero in a dataframe
+df[is.na(df)] <- 0
+return(df)
+}
+
+```
+
+Batch in the external polygon file.
+
+```{r batch in the external file}
+
+faf <- readOGR(dsn = "C:/personal/r", "FAF4_Pop1_LCC") %>% .[.@data$pop >0, ]
+df <- faf@data
+
+#' Order the shapefile and scale the population
+faf1 <- faf[order(faf@data$F4Z),]
+  faf1@data$pop <- as.integer(faf1@data$pop/1000)
+
+#' get list of faf ids
+lst <- as.numeric(as.character(faf1@data$F4Z))
+
+
+```
+
+Function for cleaning and calculating the euclidean distance.
+```{r create function}
+
+euc <- function(i, geog, scale, cname){
+  "
+  Function for undertaking the selection of an external polygon, random point creation within in based on population, and the estimation of     euclidean distance between the two.
+  "
+
+  # select the first polygon
+  faf1_f <- geog[geog@data[[cname]] == lst[i], ]
+    p <- faf1_f@data$pop
+  
+  #' create random points
+  sp_i <- spsample(faf1_f, p, type = "random", iter = 6)
+
+  cds <- as.data.frame(sp_i@coords)
+  
+  f1 <- subset(cds, select= c(x, y)) %>% data.matrix(., rownames.force = TRUE) 
+    dis <- as.data.frame(dist1(f1))
+    
+    # set colnames to be sequentially numbered from 1 to number of points
+    colnames(dis) <- seq(1, p) 
+      dis$ID <- rownames(dis) # create column for melting
+
+    #' now melt and calculate the average and divide by 2
+    cc <- melt(dis, id.vars = "ID")
+    avg <- mean(cc$value)/scale
+    
+    # bind the average value and FAF4 zone it belongs to   
+    izonal <- as.data.frame(cbind(avg, lst[i]))
+    
+    return(izonal)
+} 
+
+```
+
+Create empty dataframe to recieve average values for FAF4 zones.
+
+```{r}
+
+izonal1 <- data.frame(avg = numeric(0), V2 = numeric(0))
+
+for (i in 1:length(lst)){
+  # call the function  
+  a1 <- euc(i, faf1, 2, "F4Z")
+    # append the values  
+    izonal1 <- rbind(izonal1, a1)
+}
+# prepare column name list
+cols <- c("F4Z", "IntraZonalDist", "FAF4Name", "Pop")
+
+#' merge in FAF4 names
+izonal1 <- merge(izonal1, df, by.x = "V2", by.y = "F4Z", all.x = TRUE) %>% 
+  subset(., select = c("V2", "avg", "CFS12_NAME", "pop")) 
+
+# set column names
+colnames(izonal1) <- cols
+
+```
+
+## Now do the above for the Canadian external zones. 
+
+These two procedures had to be separated because CMA numbers in Canada clash with FAF4 zone numbers. Additionally, the scaling of the population in Canada and the ultimate transformation of the intrazonal distances is not necessarily a half as was done for the FAF4 zones. We have implemented a square root approach here. This is because the pop in Canadian provinces is a lot more sparse and the provincial areas are very large. A random point generation process inherently assumes that there is an even distribution of population, which is truly not the case in the Canadian provinces. 
+
+```{r}
+# read the external shape file for canada. The population in this file was already scaled by 100 by mistake
+cad <- readOGR(dsn = "C:/personal/r", "ExtZones_Final_CAD_LCC_1")
+  # Only keep relevant columns
+  cad <- cad[, c("cma_1", "pop")]
+  # get dataframe
+  df1 <- cad@data
+
+#' Order the shapefile and scale the population. Set a minimum of 10 points within a polygon
+cad1 <- cad[order(cad@data$cma_1),]
+  cad1@data$pop <- ifelse(as.integer(cad1@data$pop/1000) < 10, 10, 
+                          as.integer(cad1@data$pop/1000)) 
+
+#' get list of faf ids
+lst <- as.numeric(as.character(cad1@data$cma_1))
+
+```
+
+Create empty dataframe to recieve average values for Canadian external zones.
+
+```{r}
+
+izonal10 <- data.frame(avg = numeric(0), V2 = numeric(0))
+
+for (i in 1:length(lst)){
+    a1 <- euc(i, cad1, 2, "cma_1")
+    # append the values  
+    izonal10 <- rbind(izonal10, a1)
+}
+# prepare column name list
+cols <- c("CMA", "IntraZonalDist", "Pop")
+
+#' merge in FAF4 names and square root the average distance
+izonal10 <- merge(izonal10, df1, by.x = "V2", by.y = "cma_1", all.x = TRUE) 
+
+# %>%  transform(., avg = sqrt(avg))
+
+# set column names
+colnames(izonal10) <- cols
+
+```
+
+Merge the datasets and convert to travel times, using a 60 km/hr threshold. This can be changed by the user and tested under various scenarios.
+
+```{r}
+# speed threshold for calculating travel times
+spd <- 60
+
+# column names
+cols <- c("Geog", "IntraZonalDist", "Pop")
+
+#only keep relevant columns and set column names for FAF4 zones
+izonal2 <- subset(izonal1, select = c("F4Z", "IntraZonalDist", "Pop"))
+colnames(izonal2) <- cols
+
+# Clean the Canadian intrazonal distances
+izonal11 <-izonal10
+colnames(izonal11) <- cols
+
+# create final intrazonal dataframe and estimate time (minutes) using speed threshold
+izonal_final <- rbind(izonal2, izonal11) %>% 
+  transform(., ttime = ((IntraZonalDist/1000)/60)*60)
+
+#write.csv(izonal_final, "intratimes.csv")
+
+```
+
+
+
+

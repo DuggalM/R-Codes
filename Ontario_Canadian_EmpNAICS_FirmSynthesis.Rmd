@@ -1,0 +1,56 @@
+---
+title: "External Canadian Emp by NAICS and Population by Province"
+author: "Mausam Duggal"
+date: "August 6, 2016"
+output: html_document
+---
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(knitr); library(gaussfacts); library(rmsfact); library(reshape2); library(rgdal); library(sp); library(stringr)
+
+wd <- setwd("c:/personal/r")
+```
+
+#### Batch in the Ontario Business Points data that Rick cleaned 
+
+
+```{r NHS}
+emp <- read.csv("c:/personal/r/firms.csv", stringsAsFactors = FALSE) %>% subset(., taz != 0)
+
+```
+
+
+```{r}
+#' Group and summarise by DAUID and then convert to wide format for getting total employment 
+#' at the DA level which will be joined to the DA shapefile
+
+da_emp <- emp %>% group_by(taz) %>% summarise(emp = sum(n_employees)) 
+write.csv(da_emp, "SyntheticTotEmp_DAGGH.csv", row.names = FALSE)
+
+```
+
+```{r}
+
+# Now create a long form table with the number of rows in the dataframe matching those
+# of the number of employees.
+da_emp1 <- emp %>% group_by(taz, naics_code) %>% summarise(emp = sum(n_employees)) 
+
+# get rid of hiphenated text
+da_emp1$naics_code <- gsub("\\-.*", "", da_emp1$naics_code)
+
+sum(da_emp1$emp)                                                
+# create an empty dataframe
+da_emp1_expanded <- as.data.frame(matrix(NA_integer_, nrow = sum(da_emp1$emp), ncol = 2))
+
+da_emp1_expanded <- da_emp1[rep(seq(nrow(da_emp1)), da_emp1$emp), 1:2] %>% transform(., ID = seq.int(nrow(da_emp1_expanded)))
+colnames(da_emp1_expanded)<- c("DAUID", "naics2", "ID")
+
+```
+
+
+```{r}
+write.csv(da_emp1_expanded, "SyntheticEmp_DAGGH.csv", row.names = FALSE)
+
+```
+
+

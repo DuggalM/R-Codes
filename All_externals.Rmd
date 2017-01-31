@@ -1,0 +1,92 @@
+---
+title: "Mausam Duggal"
+author: "Batchin all the surveys and create a final external table"
+date: "July 18, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(ggplot2); library(knitr); library(rgeos); library(ggmap); 
+library(rgdal); library(foreign); library(splitstackshape); library(spatialEco); library(data.table)
+```
+
+Set working directory to start the process
+```{r Set Working Directory}
+# opts_knit$set(root.dir = 'c:/personal/r')
+ wd <- setwd("c:/personal/r")
+```
+
+Batch in all the processed suveys.  
+
+```{r batch in the Border survey and also bring in the origin and destination GGH TAZ info}
+
+# read the file in its raw format after saving it out as a CSV
+ww <- read.csv("WaterlooWellington.csv", stringsAsFactors = FALSE) 
+bd <- read.csv("FinalBorder.csv", stringsAsFactors = FALSE)
+sm <- read.csv("SimcoeSurveys.csv", stringsAsFactors = FALSE)
+pt <- read.csv("PeterboroughSurvey.csv", stringsAsFactors = FALSE)
+
+# bring in the old GGHV3 matrix
+
+old <- read.csv("old_auto_external_trips.csv", stringsAsFactors = FALSE)
+
+```
+
+Clean the external files
+
+```{r}
+
+ww <- subset(ww, select = - X)
+bd <- subset(bd, select = c(Origin, Dest, PP_FTrips)) 
+  names(bd) <- c("TAZ_Origin","TAZ_Dest","trips")
+sm <- subset(sm, select = - X)
+  names(sm) <- c("TAZ_Origin","TAZ_Dest","trips")
+pt <- subset(pt, select = c(O, D, finalWt))
+    names(pt) <- c("TAZ_Origin","TAZ_Dest","trips")
+    
+all_processed <- rbind(ww, bd, sm, pt)
+all_processed <- all_processed %>% group_by(TAZ_Origin, TAZ_Dest) %>% 
+  summarise(PPTrips = sum(trips)) %>% 
+  subset(., TAZ_Origin != 0 & TAZ_Dest != 0)
+    
+```
+
+Add it all together
+
+```{r}
+
+# create unique field for joining
+old$join <- paste0(old$Origin, old$Dest)
+all_processed$join <- paste0(all_processed$TAZ_Origin, all_processed$TAZ_Dest)
+
+new_ext <- merge(old, all_processed, by = "join", all = TRUE) 
+new_ext[is.na(new_ext)] <- 0
+
+# Get rid of unneccessary fields and transfer the data
+new_ext1 <- transform(new_ext, finalT = ifelse(new_ext$Trips == 0 | new_ext$Trips < new_ext$PPTrips, 
+                                               new_ext$PPTrips, new_ext$Trips))
+
+# clean up the trip origin and destination field
+new_ext1$Origin <- ifelse(new_ext1$TAZ_Origin > 0, 0, new_ext1$Origin)
+
+new_ext1$Dest <- ifelse(new_ext1$TAZ_Dest > 0, 0, new_ext1$Dest)
+
+#now add in the final trip origins and destinations
+new_ext1$TAZ_Origin <- new_ext1$TAZ_Origin + new_ext1$Origin
+
+new_ext1$TAZ_Dest <- new_ext1$TAZ_Dest + new_ext1$Dest
+
+
+  new_ext1 <- subset(new_ext1, select = c(TAZ_Origin, TAZ_Dest, finalT))
+  
+  #write out the final trip table
+  write.csv(new_ext1, "Final2011Ext.csv")
+  
+```
+
+
+

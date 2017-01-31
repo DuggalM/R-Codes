@@ -1,0 +1,122 @@
+---
+title: "Mausam Duggal"
+author: "Use the Wellington/Waterloo survey to create external trip matrix for GGHM 4.0"
+date: "July 18, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(ggplot2); library(knitr); library(rgeos); library(ggmap); 
+library(rgdal); library(foreign); library(splitstackshape); library(spatialEco); library(data.table)
+```
+
+Set working directory to start the process
+```{r Set Working Directory}
+# opts_knit$set(root.dir = 'c:/personal/r')
+ wd <- setwd("c:/personal/r")
+```
+
+Batch in the Wellington/Waterloo survey. Clean it to get **rid of Weekend** travel.  
+
+```{r batch in the Border survey and also bring in the origin and destination GGH TAZ info}
+
+# read the file in its raw format after saving it out as a CSV
+ww <- read.csv("ww.csv", stringsAsFactors = FALSE) 
+
+ggh_o <- read.dbf("ggh_o.dbf") %>% subset(., select = c(SurveyID2, TAZ_NO)) 
+ggh_o <- dplyr::rename(ggh_o, TAZ_Origin = TAZ_NO)
+
+ggh_d <- read.dbf("ggh_d.dbf") %>% subset(., select = c(SurveyID2, TAZ_NO)) 
+ggh_d <- dplyr::rename(ggh_d, TAZ_Dest = TAZ_NO)
+```
+
+
+Clean the data to remove unncessary records and join the GGH TAZ info that was created in ArcMap and batched in the step above
+```{r }
+# subset to remove blank cells in date_received column
+ww <- subset(ww, Date_received != "")
+
+#write.csv(ww, "wellington_points1.csv")
+
+# join the GGH TAZ info for origins
+ww1 <- left_join(ww, ggh_o, by.x = "SurveyID2", by.y = "SurveyID2")
+ww1 <- left_join(ww1, ggh_d, by.x = "SurveyID2", by.y = "SurveyID2")
+
+# set NAs to zero
+ww1[is.na(ww1)] <- 0
+
+```
+
+The data does not contain a weekday column. So, it needs to be created for further subsetting it.
+```{r clean data for creating date columns}
+
+# use the splitstack pacakge to break the character column into three columns
+ww2 <- cSplit(ww1, "Date_received", "-", direction = "wide", drop = FALSE)
+
+# Now add in the date columns
+ww2 <- transform(ww2, month = ifelse(Date_received_2 == "Jun", 6,
+                                      ifelse(Date_received_2 == "Jul", 7, 8))) %>% 
+  transform(., day = Date_received_1) %>% 
+  transform(., year = paste0("20", Date_received_3)) %>% 
+  transform(., dates = paste0(month,"/", day, "/", year))
+
+# Now populate the weekdays
+ww2$dates1 <- weekdays(as.Date(ww2$dates, "%m/%d/%Y"))
+
+  # Now only keep the Weekday travel and trips between 600 and 900
+  ww2_wd <- subset(ww2, dates1 != "Saturday" | dates1 != "Sunday") %>% subset(., Time >= 600 & Time < 901)
+  ww2_wd[is.na(ww2_wd)] <- 0
+  
+  # batch out the origins and dest that have a zero as these belong to the ones 
+  # that are not in the GGH and need to be tagged to an external
+  o <- subset(ww2_wd, TAZ_Origin == 0) %>% write.csv(., "ww_orig_ext.csv")
+  d <- subset(ww2_wd, TAZ_Dest == 0) %>% write.csv(., "ww_dest_ext.csv")
+  
+```
+
+Now batch in the information that links the external (non-GGH) trip end to an external GGH zone. This is once again done in Arc to make it quick and visual
+```{r batch in the external zone mapping}
+
+ext_o <- read.dbf("ww_orig_ext_GGH.dbf") %>% subset(., select = c(SurveyID2, ID))
+ext_d <- read.dbf("ww_dest_ext_GGH.dbf") %>% subset(., select = c(SurveyID2, ID))
+  
+```
+
+Now batch in the GGH zone for both origins and destinations that Mauricio has already brought in
+
+```{r batch in orig and dest GGH ids}
+# Create subset of dataframe to work with
+ww3_wd <- subset(ww2_wd, select = c(SurveyID2, TAZ_Origin, TAZ_Dest, Site_Wt_24h))
+
+# Now merge the origins
+ww3_wd <- merge(ww3_wd, ext_o, by.x = "SurveyID2", by.y = "SurveyID2", all.x = TRUE) 
+ww3_wd <- dplyr::rename(ww3_wd, ExtO = ID)
+
+# Now merge the dests
+ww3_wd <- merge(ww3_wd, ext_d, by.x = "SurveyID2", by.y = "SurveyID2", all.x = TRUE) 
+ww3_wd <- dplyr::rename(ww3_wd, ExtD = ID)
+
+ww3_wd[is.na(ww3_wd)] <- 0
+
+# Now update the origin and destinations
+
+ww3_wd$TAZ_Origin = ww3_wd$TAZ_Origin + ww3_wd$ExtO
+ww3_wd$TAZ_Dest = ww3_wd$TAZ_Dest + ww3_wd$ExtD
+
+#' get rid of records with the same movement
+ww4_wd <- subset(ww3_wd, TAZ_Origin != TAZ_Dest) %>% subset(., select = -c(ExtO, ExtD, SurveyID2)) %>% 
+  subset(., TAZ_Origin < 9400 & TAZ_Dest < 9400)
+
+```
+
+Prepare the final tables and write it out
+
+```{r group}
+
+ww5_wd <- ww4_wd %>% group_by(TAZ_Origin, TAZ_Dest) %>% summarise(trips = sum(Site_Wt_24h))
+
+write.csv(ww5_wd, "WaterlooWellington.csv")

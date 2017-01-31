@@ -1,0 +1,228 @@
+---
+title: "Intermodal Analysis"
+output:
+  html_notebook: default
+  html_document: default
+  pdf_document: default
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(knitr); library(reshape2); library(tidyr); library(foreign); library(ggplot2); library(DT)
+
+wd <- setwd("c:/personal/r")
+```
+
+### Round 1: Analysis Using CO and TR Car_Type_Codes
+
+Transport Canada's Rail data is being used to identify whether a commodity has the propensity to be containerized or bulk. The data is subsetted only for 2011 and the Car_Type_Code field is the identifying flag. A research online of railway car type codes (https://en.wikipedia.org/wiki/List_of_railway_vehicles) and comparing them to the ones used by TC, helped tag the **CO** and **TR** codes as flags for *containerization*. The rest of the codes were assumed to represent Bulk commodities.
+
+Any tonnage obtained from the containerized flags stands for **Intermodal** in *Round 1* analysis.
+
+```{r}
+#' read rail summaries and only keep 2011
+rail <- read.csv("C:/Personal/R/Rail Traffic Summary.csv")  %>% subset(., year == 2011)
+
+#' Only the CO and TR rail codes were defined for Containerized traffic
+imtot <- rail %>% group_by(sctg2, Car_Type_Code) %>% 
+  summarise(t_im = sum(tonnes)) %>% 
+  transform(., Cont = ifelse(Car_Type_Code == "CO", 1, 0),
+            ifelse(Car_Type_Code == "TR", 1, 0)) %>%
+  group_by(sctg2, Cont) %>% summarise(Round1_Tons = sum(t_im))
+
+#' translate from a melted to a wide format
+imtot_cast <- dcast(imtot, sctg2 ~ Cont, value.var = "Round1_Tons") 
+imtot_cast[is.na(imtot_cast)] <- 0
+colnames(imtot_cast) <- c("sctg2", "Bulk", "Container")
+imtot_cast <- transform(imtot_cast, Round1_Pct = round( Container/(Container + Bulk), 2))
+
+```
+
+Plot the Container vs Bulk tonnage by commodity.  
+
+```{r, fig.height=8, fig.width=16}
+#' Show bar graph of commodities and type of tonnage
+ggplot(imtot, aes(x=factor(sctg2), y = Round1_Tons, fill = factor(Cont)), color = factor(Cont)) + stat_summary(position=position_dodge(),geom="bar") + scale_x_discrete("SCTG2") + scale_y_continuous("Annual Tons") + scale_fill_discrete(name ="Containerization", labels=c("Bulk", "Containerized")) + ggtitle("Round 1 Analysis - Annual Tons of Intermodal SCTG2")
+
+```
+
+```{r}
+#' Plot the commodity table by tonnage type
+datatable(imtot_cast)
+print(paste0("Container type tonnage carried out a total of ", sum(imtot_cast$Container), " tonnes."))
+print(paste0("Bulk type tonnage carried out a total of ", sum(imtot_cast$Bulk), " tonnes."))
+
+print(paste0("Container type tonnage was about ", (sum(imtot_cast$Bulk)/(sum(imtot_cast$Bulk) + sum(imtot_cast$Bulk)))*100, " percent of total tonnes."))
+
+```
+
+As can be seen a number of commodities are predominantly bulk **or** containerized. Some of the commodity groups (e.g. sctg2 13, 20, 31 etc.) exhibit a mix of tonnage type, but that could be attributed to the generalization of individual commodities within a particular SCTG2. The information gleaned in this table will be helpful in disaggregating the Railzone data to the individual rail yards that will be tagged with a **Bulk, Container, or Both category**. 
+
+### Round 2: Analysis Using Intermodal Flag
+
+In Round 1, we assumed that all the Car_Type_Codes that are either TR or CO are containerized traffic while the others are Bulk. However, TC's data also has a **flag for Intermodal**. In Round 2, we are using that flag to inform our analysis. 
+
+```{r}
+#' This dataset only represents the records that are flagged as Intermodal
+rail_im11 <- rail %>% group_by(sctg2, Intermodal_Flag) %>% summarise(Round2_Tons = sum(tonnes)) 
+#' set factor column to character and tag the blank records to Not Intermodal
+i <- sapply(rail_im11, is.factor)
+rail_im11[i] <- lapply(rail_im11[i], as.character) 
+
+rail_im11$Intermodal_Flag[rail_im11$Intermodal_Flag == ""] <- "NotIntermodal"
+
+#' translate from a melted to a wide format
+rail_im11_cast <- dcast(rail_im11, sctg2 ~ Intermodal_Flag, value.var = "Round2_Tons") 
+rail_im11_cast[is.na(rail_im11_cast)] <- 0
+rail_im11_cast <- transform(rail_im11_cast, Round2_Pct = round(Intermodal/(Intermodal + NotIntermodal), 2))
+```
+
+```{r, fig.height=8, fig.width=16}
+#' Show bar graph of commodities and type of tonnage
+ggplot(rail_im11, aes(x=factor(sctg2), y = Round2_Tons, fill = factor(Intermodal_Flag)), color = factor(Intermodal_Flag)) + stat_summary(position=position_dodge(),geom="bar") + scale_x_discrete("SCTG2") + scale_y_continuous("Annual Tons") + scale_fill_discrete(name ="Intermodal Flag") + ggtitle("Round 2 Analysis - Annual Tons of Intermodal SCTG2")
+```
+
+```{r}
+
+datatable(rail_im11_cast)
+print(paste0("Container type tonnage carried out a total of ", sum(rail_im11_cast$Intermodal), " tonnes."))
+print(paste0("Bulk type tonnage carried out a total of ", sum(rail_im11_cast$NotIntermodal), " tonnes."))
+
+print(paste0("Container type tonnage was about ", (sum(rail_im11_cast$Intermodal)/sum((rail_im11_cast$Intermodal + rail_im11_cast$NotIntermodal)))*100, " percent of total tonnes."))
+
+```
+
+### Round 3: Bring this together
+
+The first two rounds of analysis have pointed to some signficant differences in how intermodal freight can be understood. To facilitate the discussion we are bringing the analysis together.
+```{r}
+imtot_11 <- transform(imtot, Intermodal_Flag = ifelse(Cont == 1, "Intermodal", "NotIntermodal")) %>% subset(., select = -c(Cont))
+#' merge the tonnage datasets
+all_data <- merge(imtot_11, rail_im11, by = c("sctg2", "Intermodal_Flag"))
+#' merge the Intermodal Percentage datasets
+all_data_p <- merge(imtot_cast, rail_im11_cast, by = "sctg2") %>% subset(., select = c("sctg2", "Round1_Pct", "Round2_Pct"))
+```
+
+Plot the data together. First by tons, and the percentages.
+```{r, fig.height=8, fig.width=16}
+#' melt the tonnage data
+all_data_melt <- melt(all_data, id.vars = c("sctg2", "Intermodal_Flag"))
+colnames(all_data_melt) <- c("sctg2", "Intermodal_Flag", "Analysis", "Tons")
+#' Show bar graph of commodities and type of tonnage
+ggplot(all_data_melt, aes(x=factor(sctg2), y = Tons, fill = factor(Intermodal_Flag)), color = factor(Intermodal_Flag)) + stat_summary(position=position_dodge(),geom="bar") + scale_x_discrete("SCTG2") + scale_y_continuous("Annual Tons") + scale_fill_discrete(name ="Intermodal Flag") + facet_grid(~ Analysis)
+
+#' melt the percent data
+all_data_pm <- melt(all_data_p, id.vars = "sctg2") 
+colnames(all_data_pm) <- c("sctg2", "Analysis", "Pct")
+#' Show bar graph of commodities and percent type
+ggplot(all_data_pm, aes(x=factor(sctg2), y = Pct, fill = factor(Analysis)), color = factor(Analysis)) + stat_summary(position=position_dodge(),geom="bar") + scale_x_discrete("SCTG2") + scale_y_continuous("Percentage of InterModal") + scale_fill_discrete(name ="Percentages of Intermodal") + ggtitle("Comparing Intermodal Percentages - Round 1 and Round 2 Analysis")
+
+```
+Plot the percentages table for comaprison.
+
+```{r}
+datatable(arrange(all_data_pm, sctg2))
+
+```
+
+**Summary** so far:
+The Round 2 analysis that was done using the **Intermodal_Flag** in the TC dataset showed far less intermodal tons across most commodities as compared to the Round 1 analysis that uses the "CO" and "TR" Car_Type_Codes field in the same dataset. This ofcourse assumes that shipment moved by either of those two cars is Intermodal in nature.
+
+Even more stark results are to be seen when one plots the Intermodal Percentages gleaned in Round 1 and Round 2. These differences are signficant enought to warrant a discussion with MTO to ensure that everyone understands the data and avoid any misrepresentation of definitions.
+
+### Round 4 Analysis - Commodity Tonnage Type by Distance Band. Done for Round 1 Data currently.
+
+```{r}
+
+totalt <- rail %>% group_by(sctg2) %>% 
+  summarise(t = sum(tonnes)) 
+
+#' read equivalency file that will conver all the Origin and Destination codes in the rail data
+#' to a numeric zone id, for easy manipulation. These zone ID's also corresspond to the distance
+#' skims that were created in ArcMap. The ArcMap skims are a placeholder as the Emme skims were
+#' unavailable. These will be replaced later on, if needed.
+im_equiv <- read.csv("intermodal_equiv.csv", stringsAsFactors = FALSE)
+skim <- read.dbf("Dist_Intermodal.dbf") %>% 
+  subset(., Total_Leng != 0) %>% 
+  subset(., select = c(Name, Total_Leng))
+#' set factor columns to character
+i <- sapply(skim, is.factor)
+skim[i] <- lapply(skim[i], as.character) 
+skim <- separate(skim, Name, into = c("Orig", "Dest"), sep = " - ") %>% 
+  transform(., Total_Leng = Total_Leng/1000)
+```
+
+
+Create **Round 1 intermodal flows** (car_type_codes) and segregate by distance bands as well as domestic vs international
+
+```{r}
+
+#' create Round 1 intermodal flows using the "CO" and "TR" car_type_codes field
+m <- subset(rail, (Car_Type_Code %in% "CO") | (Car_Type_Code %in% "TR"))
+#' Merge the equiv file to create appropriate Orig IDs
+m1 <- merge(m, im_equiv, by.x = "Origin", by.y = "STATE_NAME", all.x = TRUE) %>% 
+  subset(., select = - RAILZONE_3) %>% 
+  rename(., OrigID = ID_1)
+#' Now merge the Dest IDs
+m1 <- merge(m1, im_equiv, by.x = "Destination", by.y = "STATE_NAME", all.x = TRUE) %>% 
+  subset(., select = - RAILZONE_3) %>% 
+  rename(., DestID = ID_1)
+#' set all NA records to 999 as they are in Mexico
+m1[is.na(m1)] <- 999
+
+#' Now merge the skim distance to this table
+m2 <- merge(m1, skim, by.x = c("OrigID", "DestID"), by.y = c("Orig","Dest"), all.x = TRUE)
+# set Mexico to a default distance of 5000 km.
+m2[is.na(m2)] <- 5000
+#' generate skim codes in bands of 500 kms.
+m2 <- transform(m2, DCode = ifelse(Total_Leng <= 800, 1,
+                                   ifelse(Total_Leng > 800 & Total_Leng <= 1500, 2,
+                                          ifelse(Total_Leng > 1500 & Total_Leng <= 2000, 3,
+                                                 ifelse(Total_Leng > 2000 & Total_Leng < 2500, 4, 5)))))
+#' Add trade type using the Railzone definitions. If less than 50 then 
+#' both trip ends were within Canada; international otherwise
+m2 <- transform(m2, Type = ifelse(OrigID < 50 & DestID < 50, "Domestic", "International"))
+
+```
+
+The SCTG2-42 category tends to completely distort the plots due to its scale hence it has been removed from the evaluation. To assist in deciphering trends, the data has been broken into total (all distance bands); all but DCode 5 (>2000 km); and every individual distance band w/o SCTG2-42.
+
+```{r, fig.height=8, fig.width=16}
+# all values
+bydist <- m2 %>% group_by(DCode, sctg2, Type) %>% summarise(tonnage = sum(tonnes)) %>% 
+  subset(., sctg2 !=42)
+# all values, except SCTG2-42 and no distance greater than 2000 kms
+#bydist1 <- subset(bydist, DCode != 5)
+# get values by each distance band, except for sctg2 42 as it represents miscellaneous goods
+by1 <- subset(bydist, DCode == 1 & sctg2 !=42)
+by2 <- subset(bydist, DCode == 2 & sctg2 !=42)
+by3 <- subset(bydist, DCode == 3 & sctg2 !=42)
+by4 <- subset(bydist, DCode == 4 & sctg2 !=42)
+by5 <- subset(bydist, DCode == 5 & sctg2 !=42)
+
+#' All distance bands included
+ggplot(bydist, aes(y = tonnage, x = factor(sctg2), fill = factor(sctg2))) + 
+  geom_bar(stat = "identity") + ggtitle("Intermodal Tonnes by All Distance Bands (1-5) and No SCTG2-42") +  facet_grid(Type ~ DCode) + theme(axis.text = element_text(size = 3)) 
+
+```
+
+
+
+Flows Aggregated by Distance and classified as Domestic vs International
+```{r, fig.height=8, fig.width=16}
+
+#' All distance bands included
+ggplot(bydist, aes(y = tonnage, x = factor(sctg2), fill = factor(sctg2))) + 
+  geom_bar(stat = "identity") + ggtitle("Intermodal Tonnes by Flow Type and No SCTG2-42") + facet_grid(~ Type) + theme(axis.text = element_text(size = 3))
+
+```
+
+
+
+
+
+

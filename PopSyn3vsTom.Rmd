@@ -1,0 +1,109 @@
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(sp)
+library(rgdal)
+
+#############################################################################################
+```
+
+
+```{r init, echo=FALSE, message=FALSE, warning=FALSE}
+#############################################################################################
+# set working directory
+
+wd <- setwd("c:/personal/r")
+```
+
+####  This R Markdown file does a comparison of Tom's macroeconomic model estimates for 2011 with those prepared by the MTO and used in PopSYn3. 
+
+##### Read all the files necessary, including shapefiles for getting equivalency tables that map TAZs in the GGHM to CSDs
+
+```{r }
+csd <- readOGR(wd, "CSD")
+  csd.df <- csd@data
+taz <- readOGR(wd, "GGHM_Cen")
+  taz.df <- taz@data %>% subset(., select = c("TAZ_NO", "CSDUID"))
+
+pop3 <- read.csv(file = "synpop_person_with_required_fields.csv", stringsAsFactors = FALSE)
+hh3 <- read.csv(file = "synpop_hh.csv", stringsAsFactors = FALSE)
+
+# read Tom's numbers
+tom <- read.csv(file = "TomNumbers.csv", stringsAsFactors = FALSE)
+  tom <- merge(tom, csd.df, by.x = "CSDUID", by.y = "CSDUID", all.x = T) %>% 
+    subset(., select = c("CSDUID", "TomPop", "TomHH", "GGH"))
+```
+
+Summarise and count PopSyn3 population data
+
+```{r summarize Popsyn3 Population data}
+#' create summaries
+pop3.sum <- pop3 %>% group_by(taz) %>% summarise(popl3 = sum(finalweight))
+  
+  #' join to bring in taz level mapping
+  pop3.sum <- merge(pop3.sum, taz.df, by.x = "taz", by.y = "TAZ_NO", all.x = T) %>% 
+    transform(., CSDUID1 = as.numeric(as.character(CSDUID))) %>% 
+    subset(., select = c("taz", "popl3", "CSDUID1"))
+    
+  #' get rid of NAs and populate the entire CSD column
+    pop3.sum[is.na(pop3.sum)] <- 0
+      pop3.sum <- transform(pop3.sum, CSDUID1 = ifelse(CSDUID1 == 0, taz, CSDUID1)) 
+        pop3.sum <- pop3.sum %>% group_by(CSDUID1) %>% summarise(popl3 = sum(popl3))
+    
+        
+```
+
+
+Summarize and count Popsyn3 Household data
+
+```{r summarize Popsyn3 Household data}
+#' create summaries
+hh3.sum <- hh3 %>% group_by(taz) %>%
+  summarise(hh3 = sum(finalweight))
+ 
+  #' join to bring in taz level mapping
+  hh3.sum <- merge(hh3.sum, taz.df, by.x = "taz", by.y = "TAZ_NO", all.x = T) %>% 
+    transform(., CSDUID1 = as.numeric(as.character(CSDUID))) %>% 
+    subset(., select = c("taz", "hh3", "CSDUID1"))
+    
+  #' get rid of NAs and populate the entire CSD column
+    hh3.sum[is.na(hh3.sum)] <- 0
+      hh3.sum <- transform(hh3.sum, CSDUID1 = ifelse(CSDUID1 == 0, taz, CSDUID1)) 
+        hh3.sum <- hh3.sum %>% group_by(CSDUID1) %>% summarise(hh3 = sum(hh3))
+```
+
+Now join the datasets together and estimate their differences
+
+```{r Join the datasets and estimate differences, echo=FALSE, message=FALSE, warning=FALSE}
+joined1 <- merge(tom, pop3.sum, by.x="CSDUID", by.y="CSDUID1", all.x = T) 
+
+#now join the housing data
+joined1 <- merge(joined1, hh3.sum, by.x="CSDUID", by.y="CSDUID1", all.x = T)
+  joined1 <- transform(joined1, popdiff = TomPop - popl3) %>% transform(., hhdiff = TomHH - hh3)
+  joined1[is.na(joined1)] <- 0
+  
+  print(paste0("The difference between Tom's population estimates and those from PopSyn3 are ", sum(joined1$popdiff)))
+  print(paste0("The difference between Tom's household estimates and those from PopSyn3 are ", sum(joined1$hhdiff))) 
+  
+ joined1.ggh <- subset(joined1, GGH == 1)
+  
+  print(paste0("The difference between Tom's population estimates and those from PopSyn3 within the GGH are ", sum(joined1.ggh$popdiff)))
+  print(paste0("The difference between Tom's household estimates and those from PopSyn3 within the GGH are ", sum(joined1.ggh$hhdiff)))
+
+```
+
+
+```{r Plot differences between input and output fields}
+
+# plot the differences of households. GGH = 1 and Outside GGH = 0
+ggplot(joined1, aes(x=CSDUID, y=hhdiff))+geom_line(color="grey")+geom_point(color="red")+
+  ggtitle("Household Differences (Tom Households - PopSyn3 Households)") + facet_grid(. ~ GGH)
+
+# plot the differences of population.  GGH = 1 and Outside GGH = 0
+ggplot(joined1, aes(x=CSDUID, y=popdiff))+geom_line(color="grey")+geom_point(color="red")+
+  ggtitle("Population Differences (Tom Population - PopSyn3 Population)") + facet_grid(. ~ GGH)
+```
+```
+

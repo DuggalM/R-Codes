@@ -26,10 +26,10 @@ Batch in PopSyn3 Pop and HHold Outputs and CSD level Inputs
 for comparing popsyn3 accuracy
 
 ```{r Files for comparison}
-pop3 <- read.csv(file = "synpop_person_with_required_fields.csv", stringsAsFactors = FALSE)
-hh3 <- read.csv(file = "synpop_hh.csv", stringsAsFactors = FALSE)
+pop3 <- read.csv(file = "c:/personal/r/synpop_person_with_required_fields.csv", stringsAsFactors = FALSE)
+hh3 <- read.csv(file = "c:/personal/r/synpop_hh.csv", stringsAsFactors = FALSE)
 #' read control total file
-csdin <- read.csv(file = "tazData.csv", stringsAsFactors = FALSE)
+csdin <- read.csv(file = "c:/personal/r/tazData.csv", stringsAsFactors = FALSE)
 ```
 
 With the files batched in, summarize the Control and Input files across CSDUID
@@ -69,6 +69,8 @@ joined <- subset(joined, joined$popin !=0)
 
 Report totals of the differences
 ```{r Basic Statistics of the differences}
+
+# Sum up the population and household difference columns
 sum(joined$popdiff)
 sum(joined$hhdiff)
 ```

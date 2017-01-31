@@ -1,0 +1,314 @@
+---
+title: "Creation of the Home Based University PA Tables - RMOW model"
+output:
+  html_document: default
+  html_notebook: default
+  pdf_document: default
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(knitr); library(reshape2); library(tidyr); library(foreign); library(ggplot2); library(ggmap); library(rgdal); library(maptools); library(spatialEco); library(png); library(grid); library(DT)
+
+#wd <- setwd("c:/personal/r")
+```
+## Post Seconary Survey Analysis
+Here we are batching in the survey that we got from Geoff at the Region of Waterloo. The intent is to understand **mode choice** that is currently prevalent within the Region as it pertains to post secondary travel. If the data permits, we would also like to **extract spatial patterns**, although at first glance it seems that rather than absolute numbers, we can extract the relative attractiveness of many sub-geographies within the Region as it pertains to post secondary residential choice. 
+
+### **Mode Choice** from the Survey
+```{r}
+
+#' read in the university dataset. The *.sav extension works better.
+dataset = read.spss("C:/Projects/Waterloo/HBU Survey.sav", to.data.frame=TRUE)
+
+#' Only keep the columns that matter for generating a PA table
+data1 <- dataset[, c(4:10, 14:17, 31, 45)]
+
+```
+
+#### Only keep trips that corresspond to university and college trips that take place to campuses within Waterloo. Also generate a table that shows the trips by mode that the post secondary trips within Waterloo belong to.
+```{r, fig.height=8, fig.width=16}
+#' generate unique values for the campuses
+campus <- as.data.frame(unique(data1$QS1))
+colnames(campus) <- "Campuses"
+  campus <- transform(campus, flag = ifelse(campus$Campuses == "Wilfrid Laurier University/Nipissing University Concurrent E", 1,
+                                            ifelse(campus$Campuses == "Wilfrid Laurier University", 1,
+                                                   ifelse(campus$Campuses == "University of Waterloo", 1,
+                                                          ifelse(campus$Campuses == "Conestoga College", 1, 0)))))
+
+
+#' subset the data using the unique values observed in the campus dataframe
+data2 <- merge(data1, campus, by.x = "QS1", by.y = "Campuses", all.x = TRUE) %>% 
+  subset(., flag == 1 & Q2a_dk_Dontknowmainintersection == "Not Selected") %>% 
+  transform(., address = paste0(.$Q2a_box1, " and ", .$Q2a_box2,",", .$Q2a_box3)) %>% 
+  transform(., unique = seq(1, nrow(.)))
+
+# write.csv(data2, "waterloolocations.csv", row.names = F)
+
+#' get mode split values
+ms <- data2 %>% group_by(Q7) %>% summarise(frq = n()) %>% 
+  transform(., Pct = round(.$frq/sum(.$frq)*100), 2)%>% subset(., Pct != 0)
+
+# get frequecny of records by Post Secondary Institution
+f <- data2 %>% group_by(QS1) %>% summarise(NofRecords = n())
+datatable(f)
+
+```
+
+
+```{r, fig.height=8, fig.width=16}
+
+#' Plot the mode splits
+ggplot(ms, aes(y = Pct, x = factor(Q7), fill = factor(Pct))) + 
+  geom_bar(stat = "identity") + ggtitle("Mode Choice for Higher Secondary Trips in RMOW") + 
+  theme(axis.text = element_text(size = 8)) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+### Extract **Spatial Patterns** from the various datasources
+
+#### **Survey**
+```{r, fig.height=8, fig.width=16, echo = FALSE}
+#' Get a waterloo region map 
+wmap = get_map(location = "Waterloo", source = "osm")
+
+#'batch in the superzones that Nem has created
+sz <- readOGR("c:/projects/Waterloo", "WSP_SuperZones_LL")
+sz1 <- fortify(sz)
+
+#' bring it all together
+ggmap(wmap, extent = "device") + 
+    geom_polygon(data = sz1, aes(long, lat, group = group), fill = "black", colour = "red", size = 0.5, alpha = 0.1)
+
+```
+
+
+Now **geocode** the points
+```{r, fig.height=8, fig.width=16 }
+# bring in Nem's equivalency files
+eq <- read.csv("c:/projects/waterloo/FinalUpdatedZonalHierarchy_manyToMany.csv") %>% 
+  group_by(WaterlooZone) %>% summarise(SZ = min(Ensemble_Zones))
+
+#' geocode the observations
+geo_other <- read.csv("c:/projects/waterloo/surveysgeocoded1.csv")
+geo_rem <- read.csv("c:/projects/waterloo/surveysgeocoded2.csv")
+# bind all the geocoded locations
+all_geo <- rbind(geo_other, geo_rem) %>% subset(., select = -c(X))
+  write.csv(all_geo, "c:/projects/waterloo/surveysgeocoded.csv")
+# add in the latlong info to the survey records
+data3 <- cbind(data2, all_geo) %>% .[!is.na(.$lon),]
+
+#' create temp all_geo
+all_geo1 <- all_geo[!is.na(all_geo$lon), ]
+#' convert the survey records into points using the latlon
+spdf_pt <- SpatialPointsDataFrame(coords = all_geo1, data = data3)
+proj4string(spdf_pt) <- proj4string(sz)
+
+# batch in the Waterloo zone system
+wat <- readOGR("c:/projects/waterloo", "WatZones_LL")
+#' transfer the superzone info to the waterloo shapefile
+wat@data = data.frame(wat@data,eq[match(wat@data$NO, 
+                                                     eq$WaterlooZone),])
+# Do a point in polygon analysis
+spdf_wat <- point.in.poly(spdf_pt, wat)
+ss <- spdf_wat@data
+survey <- ss %>% group_by(SZ) %>% summarise(TotPAWat_Survey = n()) %>% 
+  transform(., PctWat_Sy = round(.$TotPAWat_Survey/sum(.$TotPAWat_Survey)*100),2 ) %>% subset(., select = -c(X2))
+
+# writeOGR(obj=spdf_pt, "C:/projects/waterloo", layer = "spdf_pt", driver = "ESRI Shapefile")
+
+```
+With points geocoded we now display the info. The point in polygon was done in ArcMap and the image is displayed here. As one can see nearly 55% of the survey records can be isolated down to the **zone nearest to the Waterloo university, which has on-campus housing**. This is also due to the fact that the survey records were skewed towards those attending the Univ of Waterloo and Wilfred Laurier. In closing, the pattern suggests the propensity of students to live close by to their campuses or along major transit corridors.
+
+```{r, fig.height=8, fig.width=16}
+#' Superzones showing the residential activity of the survey respondents
+img <- readPNG("c:/projects/waterloo/Post Secondary Resident Propensity.png") 
+      grid.raster(img)
+
+```
+
+
+#### Now batch in the **HBU PA table** from the **RMOW model**.
+
+The RMOW tables have been categorized by age with some overlap as the first group i.e. 10-19 also includes elementary and secondary students. In any case we are batching in the 20-29 and 30+ age groups. A certain portion of the 10-19 age category too has to be batched in.
+
+```{r}
+#' batch in an equiv file of zones and super zones
+eq <- read.csv("c:/projects/waterloo/FinalUpdatedZonalHierarchy_manyToMany.csv") %>% 
+  group_by(WaterlooZone) %>% summarise(SZ = min(Ensemble_Zones))
+
+#' Batch in the HBS PA file for age group 10-19. Nem already split this file to only contain those trip records that have at least #' one trip end within a HBU zone. 
+
+hbu0 <- read.csv("c:/projects/waterloo/HBU_10_19_Trips.csv") %>% subset(., Trips > 0) %>% 
+  merge(., eq, by.x = "Origin", by.y = "WaterlooZone") %>% 
+  merge (., eq, by.x = "Destination", by.y = "WaterlooZone")
+
+colnames(hbu0) <- c("Origin", "Dest", "Trips", "SZ_Orig", "SZ_Dest")
+
+#' get total PAs by Superzone Origin
+sz_10_19 <- hbu0 %>% group_by(SZ_Orig) %>% 
+  summarise(TotPA_1019 = sum(Trips)) %>% 
+  transform(., TotPA_1019 = (TotPA_1019))
+
+# Batch in the HBS PA file for age group 20-29 first
+hbu1 <- read.csv("c:/projects/waterloo/HBS 20-29.csv") %>% subset(., Trips > 0) %>% 
+  merge(., eq, by.x = "Origin", by.y = "WaterlooZone") %>% 
+  merge (., eq, by.x = "Destination", by.y = "WaterlooZone")
+
+colnames(hbu1) <- c("Origin", "Dest", "Trips", "SZ_Orig", "SZ_Dest")
+
+#' get total PAs by Superzone Origin
+sz_20_29 <- hbu1 %>% group_by(SZ_Orig) %>% summarise(TotPA_1929 = sum(Trips))
+
+#' Now batch in the PA file for age 30+
+hbu2 <- read.csv("c:/projects/waterloo/HBS 30+.csv") %>% subset(., Trips > 0) %>% 
+  merge(., eq, by.x = "Origin", by.y = "WaterlooZone") %>% 
+  merge (., eq, by.x = "Destination", by.y = "WaterlooZone")
+
+colnames(hbu2) <- c("Origin", "Dest", "Trips", "SZ_Orig", "SZ_Dest")
+
+#' get total PAs by Superzone Origin
+sz_30 <- hbu2 %>% group_by(SZ_Orig) %>% summarise(TotPA_30 = sum(Trips))
+
+#' Now merge the tables to show PAs being estimated by the RMOW model by superzone Origin
+hbu_orig <- merge(sz_20_29, sz_30, by = "SZ_Orig") %>% 
+  merge(., sz_10_19, by = "SZ_Orig") %>% 
+  transform(., TotPAWat = .$TotPA_1929 + .$TotPA_30 + .$TotPA_1019) %>% 
+  transform(., PctWat = round(.$TotPAWat/sum(.$TotPAWat)*100),2) %>% subset(., select = -c(X2))
+
+
+```
+
+```{r}
+
+datatable(hbu_orig)
+
+print(paste0("The RMOW model, after our adjustments for the wrong spatial locations of the various university campuses is now reporting a total of ", sum(hbu_orig$TotPAWat), " daily PAs, which equates to 13414 persons. The total enrollment in the region is 55,000. This suggests that less than **one third** the students are making a Daily Trip to any one of the campuses in the RMOW."))
+```
+
+#### Batch in the **Linkage matrix** from the V4 model
+
+Now batch in the V4 model **Linkages** from the Long Term Choice model. This model categorically reports the HBU trip and thus no further data munging is required for a comparison.
+```{r}
+#' read in Peter's files
+v4hbu <- read.csv("c:/projects/waterloo/waterloo_students.csv")
+v4hbu1 <- v4hbu[, c("X", "X8224", "X8253", "X8380", "X8384", "X8346", "X8222")] 
+
+# get totals across the destinations and get it ready for scaling
+v4hbu1$Total <- rowSums(v4hbu1[2:7]) 
+v4hbu1 <- rename(v4hbu1, Origin = X)
+
+# batch in equiv files
+eq1 <- read.csv("c:/projects/waterloo/FinalUpdatedZonalHierarchy_manyToMany.csv") %>% 
+  group_by(TTS_Zone) %>% summarise(SZ = min(Ensemble_Zones))
+
+# now merge the superzone info to the origins produced by the V4 to understand the corressponding origins of these HBU trips
+v4hbu1 <- merge(v4hbu1, eq1, by.x = "Origin", by.y = "TTS_Zone", all.x = TRUE)
+
+#' now get V4 origins that have one trip end as HBU
+v4hbu_sz <- v4hbu1 %>% group_by(SZ) %>% summarise(ToTPALink_V4 = sum(Total)) %>% 
+  transform(., PctLink_V4 = round(.$ToTPALink_V4/sum(.$ToTPALink_V4)*100),2) %>% subset(., select = -c(X2))
+``` 
+
+### Combine all the **Spatial Patterns** together
+
+Now let's bring all the various data pieces together to see how the Survey, RMOW model, and the V4 model compare in terms of the resident end of the HBU linkages.
+
+```{r, fig.height=8, fig.width=16}
+#' only keep relevant columns from the RMOW model
+hbu_orig1 <- subset(hbu_orig, select = c(SZ_Orig, TotPAWat, PctWat))
+
+final <- merge(survey, hbu_orig1, by.x = "SZ", by.y = "SZ_Orig", all.y = TRUE) %>% 
+  merge(., v4hbu_sz, by.x = "SZ", by.y = "SZ", all.x = TRUE)
+#' set NAs to zero
+final[is.na(final)]<- 0
+
+#' plot the resident ends of the HBU's from all the three sources of information.
+final_long <- subset(final, select = c(SZ, PctWat_Sy, PctWat, PctLink_V4)) %>% melt(., id.vars="SZ")
+
+# now plot
+ggplot(final_long, aes(x = SZ, y = value, fill = factor(variable))) + geom_bar(sta="identity") + 
+  scale_fill_discrete(name = "Data Sources") +  
+  ggtitle("Percent of University Residents by SuperZone for each Dataset")
+
+```
+
+#### The above analysis, specifically the graph has shown that the spatial patterns exhibited by the **updated RMOW model (in the first round of update by WSP, we have corrected spatial misallocations)** and the **V4 model** are more similar than that shown by the survey. This is not surprising given that the survey could be biased towards those who were staying in on-student campuses. However, while the updated RMOW model only produced a total of 11,000 person and university linkages, the V4 has close to 27,000. Both of these models are lower than the enrollment.
+
+#### Thus, we will use the HBU V4 matrix as a base and scale it to first get the person linkages equal to enrollment; following which it will be scaled down to reflect that on a given day there is a 80% probability of making a trip. This probability was derived from the Survey results and calculations also done independently by Geoff@Waterloo. Once the daily trips are calculated these will be converted to represent daily ProductionAttraction tables for further use in mode choice.
+
+#### While scaling up the V4's HBU matrix, care will be taken to get the percentage of residents from Superzone 51 close to reality. This is the SuperZOne with the most amount of on-campus student housing. A review on the Universtity's website has indicated that there was on-campus housing in **Superzone 51** for close to **6000 students**. This is close to **16% of the Universtiy of Waterloo's enrollment**. We will scale the V4 matrix to reflect this target as these university residences seem to enjoy very high occupancy levels.
+
+### Now create the HBU PAs
+
+```{r}
+#' Recall that the V4 produces linkages from the Long Term Choice. We also know from the V4 that it estimates close to 70% of the students that attend university in Waterloo Region live within the Region. Additionally, the Survey has shown that close to 80% of the total enrolled students are making a Daily Trip. Assuming a 52000 enrollment, the 80% is around 41000 student linkages. Further, given that only 70% of these students live within the Region, we are left with total linkages of 28700. Thus, if these linkages are multiplied by 2 we will get Daily PAs. The V4 HBU matrix currently has 19000 odd linkages. So this will be scaled and then multiplied by 2 to get daily PAs.
+
+#' scale the V4 HBU linkages to 28700.
+final <- transform(final, ToTPALink_V4_S = (ToTPALink_V4/sum(final$ToTPALink_V4))*36400) 
+#' these are the revised scaled PA
+newPA <- final[, c(1,8)]
+
+#' transfer the scaled values back to the original V4 linkages. 
+totsz <- v4hbu1 %>% group_by(SZ) %>% summarise(TotalSz = sum(Total))
+v4hbu2 <- merge(v4hbu1, totsz, by = "SZ", all.x = TRUE) %>% 
+  transform(., Prop = Total/TotalSz) %>% 
+  merge(., newPA, by = "SZ")
+
+#' Final Daily PAs for the HBU
+v4hbu3 <- v4hbu2
+
+v4hbu3 <- transform(v4hbu3, X8224 = (X8224/Total)*Prop*ToTPALink_V4_S)
+v4hbu3 <- transform(v4hbu3, X8253 = (X8253/Total)*Prop*ToTPALink_V4_S)
+v4hbu3 <- transform(v4hbu3, X8380 = (X8380/Total)*Prop*ToTPALink_V4_S)
+v4hbu3 <- transform(v4hbu3, X8384 = (X8384/Total)*Prop*ToTPALink_V4_S)
+v4hbu3 <- transform(v4hbu3, X8346 = (X8346/Total)*Prop*ToTPALink_V4_S)
+v4hbu3 <- transform(v4hbu3, X8222 = (X8222/Total)*Prop*ToTPALink_V4_S)
+
+v4hbu3 <- transform(v4hbu3, Total = rowSums(v4hbu3[, 3:8]))
+v4hbu3[is.na(v4hbu3)] <- 0
+
+# file for saving for WLOGIT
+v4hbu4 <- v4hbu3[, 2:8]
+names(v4hbu4) <- substring(names(v4hbu4), 2)
+v4hbu4 <- melt(v4hbu4, id="rigin") %>% subset(., value >0) 
+v4hbu4 <- transform(v4hbu4, value = value*0.8)
+colnames(v4hbu4) <- c("OrigZoneNo", "DestZoneNo", "HBU_PA")
+
+sum(v4hbu4$HBU_PA)
+write.csv(v4hbu4, "HBU_DailyPA.csv", row.names = FALSE)
+```
+
+```{r}
+
+eq2 <- eq
+sum_eq2 <- eq2 %>% group_by(TTS_Zone) %>% summarise(Cnt = n()) %>% transform(., frac = 1/Cnt)
+eq2 <- merge(eq2, sum_eq2, by = "TTS_Zone", all.x = TRUE)
+
+
+v4hbu5 <- merge(v4hbu4, eq2, by.x = "OrigZoneNo", by.y = "TTS_Zone", all = TRUE)
+v4hbu5 <- v4hbu5[complete.cases(v4hbu5[,2:3]),]
+
+v4hbu6 <- v4hbu5[, c(1:4, 9)]
+v4hbu6 <- rename(v4hbu6, W_Origin = WaterlooZone)
+
+v4hbu6$DestZoneNo <- as.numeric(as.character(v4hbu6$DestZoneNo))
+v4hbu6$DestZoneNo <- as.integer(v4hbu6$DestZoneNo)
+
+v4hbu6 <- merge(v4hbu6, eq2, by.x = "DestZoneNo", by.y = "TTS_Zone", all = TRUE)
+v4hbu6 <- v4hbu6[complete.cases(v4hbu6[,2:4]),]
+v4hbu6 <- rename(v4hbu6, W_Dest = WaterlooZone) 
+v4hbu6$HBU_PA_Fin <- v4hbu6$HBU_PA*v4hbu6$frac.x*v4hbu6$frac.y
+
+v4hbu7 <- subset(v4hbu6, select = c("W_Origin", "W_Dest", "HBU_PA_Fin"))
+
+write.csv(v4hbu7, "HBU_DailyPA.csv", row.names = FALSE)
+
+un4 <- as.data.frame(unique(v4hbu4$DestZoneNo))
+
+```
+

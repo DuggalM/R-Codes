@@ -1,0 +1,161 @@
+---
+title: "External Canadian Emp by NAICS and Population by Province"
+author: "Mausam Duggal"
+date: "August 6, 2016"
+output: html_document
+---
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(knitr); library(gaussfacts); library(rmsfact); library(reshape2); library(rgdal); library(sp); library(stringr)
+
+wd <- setwd("c:/personal/r")
+```
+
+#### Batch in the 2011 NHS Data 
+
+Use the 2011 NHS semi-custom tabulations to calculate the employment by NAICS for provinces other than Manitoba and Quebec.
+
+```{r NHS}
+nhs <- read.csv("c:/personal/r/2011NHS.csv", stringsAsFactors = FALSE)
+
+```
+
+Only select the columns that contain employment information and then filter rows for the various provinces. Upon which create new column names to coresspond to NAICS heading and add in a placeholder for the provincial external id.
+
+```{r subset data}
+
+#' select columns that coresspond to employment data by NAICS
+nhs1 <- nhs[c(1:2, 2066:2088)]
+
+#' create list of names to subset 
+names = c('Newfoundland', 'Nova', 'Saskatch', 'Alberta', 'New Brunswick', 'Prince Edward Island', 'Nunavut', 'Northwest Territories', 'Yukon', 'British Columbia')
+
+# select only rows that coresspond to the names and then get rid of unncessary rows that come in as a result of the names list
+nhs3 <- nhs1[grep(paste0(names, collapse = '|'), nhs1$Geography, ignore.case = TRUE),]
+nhs4 <- nhs3[-c(5,6,8,9,11,12,15,16),] %>% .[-c(3, 5)]
+
+nhs4$Geography <- gsub("/.*", "", nhs4$Geography) 
+  nhs4$Geography <- str_replace(nhs4$Geography, "\\(.*\\)", "")
+```
+
+```{r columnnames}
+# create list of colnames
+cols = c("GeogCMA", "Population", "NAICS_99", "NAICS_11", "NAICS_21", "NAICS_22", "NAICS_23", "NAICS_31", "NAICS_41", "NAICS_44", "NAICS_48", "NAICS_51", "NAICS_52", "NAICS_53", "NAICS_54", "NAICS_55", "NAICS_56", "NAICS_61", "NAICS_62", "NAICS_71", "NAICS_72", "NAICS_81", "NAICS_91" )
+
+```
+
+```{r}
+
+# set column names and add column for external ID
+colnames(nhs4) <- cols
+nhs4 <- transform(nhs4, ExtID = 0)
+
+```
+
+#### Batch in the DA shapefile for Manitoba and Quebec
+
+The non-CMA DAs have a CMAUID of 999 which will be used in conjunction with the rest of the CMAUIDs to generate emp amd pop estimates
+
+```{r}
+da <- readOGR(".", "QM_DA")
+
+```
+
+```{r get database table}
+da.df <- da@data 
+
+# only keep certain columns
+keep = c("DAUID", "CMAUID")
+da.df <- da.df[keep]
+  # get rid of factors or it won't join the dataframes
+  da.df$CMAUID <- as.numeric(as.character(da.df$CMAUID))
+   da.df$DAUID <- as.numeric(as.character(da.df$DAUID))
+
+```
+
+
+```{r transfer CMAUID to NHS}
+
+#' create list of names to subset 
+names1 = c('46', '24')
+
+# select only rows that coresspond to the names1 and then get rid of text in parenthesis for joining with shapefile data
+nhs5 <- subset(nhs1, grepl("^(46|24)", nhs1$Geography))
+
+nhs5$Geography <- str_replace(nhs5$Geography, "\\(.*\\)", "") 
+  nhs5$Geography <- as.numeric(as.character(nhs5$Geography))
+
+# now join the data 
+colnames(nhs5)[1] <- "DAUID"
+nhs6 <- merge(nhs5, da.df, by.x = "DAUID", by.y = "DAUID", all.x = TRUE)
+
+```
+
+```{r}
+# drop unncessary columns
+nhs6 <- nhs6[-c(1,3,5)]
+```
+
+```{r}
+# column names
+cols1 = c("Population", "NAICS_99", "NAICS_11", "NAICS_21", "NAICS_22", "NAICS_23", "NAICS_31", "NAICS_41", "NAICS_44", "NAICS_48", "NAICS_51", "NAICS_52", "NAICS_53", "NAICS_54", "NAICS_55", "NAICS_56", "NAICS_61", "NAICS_62", "NAICS_71", "NAICS_72", "NAICS_81", "NAICS_91", "GeogCMA" )
+
+```
+
+```{r}
+colnames(nhs6) <- cols1
+nhs6 <- transform(nhs6, ExtID = 0)
+
+```
+
+```{r}
+
+nhs6.sum <- nhs6 %>% group_by(GeogCMA) %>% summarise_each(funs(sum))
+
+```
+
+#### Bring in the external IDs and bind the dataframes together
+
+```{r}
+# file with provincial IDs
+equi <- read.csv("C:/personal/r/extid_equiv.csv", stringsAsFactors = FALSE)
+
+```
+
+
+```{r}
+
+final <- rbind(nhs4, nhs6.sum)
+
+```
+
+```{r}
+
+final1 <- merge(final, equi, by.x = "GeogCMA", by.y = "GeogCMA", all.x = TRUE) 
+
+# create equivalency for provinces
+prov <- c(
+  "Alberta" = 9793,
+  "British Columbia" = 9794,
+  "New Brunswick" = 9791,
+  "Newfoundland and Labrador" = 9790,
+  "Northwest Territories" = 9796,
+  "Nova Scotia" = 9787,
+  "Nunavut" = 9795,
+  "Prince Edward Island" = 9789,
+  "Saskatchewan" = 9792,
+  "Yukon" = 9797
+)
+
+final1[39:48,]$ProvID <- prov[1:10] 
+final1 <- subset(final1, select = - ExtID)
+
+```
+
+```{r}
+
+write.csv(final1, "extsociodata.csv")
+
+```
+
+

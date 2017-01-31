@@ -1,0 +1,298 @@
+---
+title: "Mausam Duggal"
+author: "Use the Peterborough survey to create external trip matrix for GGHM 4.0"
+date: "June 29, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r init, echo=FALSE, message=FALSE}
+library(plyr); library(dplyr); library(ggplot2); library(knitr); library(rgeos); library(ggmap); library(rgdal); library(sp); library(png); library(spatialEco); library(maptools); library(reshape2)
+```
+
+Set working directory to start the process
+```{r Set Working Directory}
+# opts_knit$set(root.dir = 'c:/personal/r')
+ wd <- setwd("c:/personal/r")
+```
+
+Batch in the Peterborough TDB survey and the **SurveysAll** table in that database. Clean it to get **rid of Weekend** travel. 
+
+```{r batch in the Peterborough survey}
+
+# read the file in its raw format after saving it out as a CSV
+pet <- read.csv("PeterboroughSurveysAll_TDB.csv", stringsAsFactors = FALSE)
+
+  # Now only keep the Weekday travel
+  pet_wd <- subset(pet, DayType == "Weekday")
+  
+
+    # Now use the NA values to subset the data further. This left over dataframe contains all those records that have at least one trip end outside the GGH area. Further also filter out surveys that took place between 6-9 in the morning.
+    pet_wd1 <- subset(pet_wd, !is.na(pet_wd["XO"])) %>% subset(., Time == "a"| Time == "b" | Time == "c")
+```
+
+Clean out any unnecssary columns summarise the total trips. 
+
+```{r only keep relevant columns}
+# create column list to keep
+
+keeps <- c("DayofWeek", "XO", "XD", "YO", "YD", "Time", "FinalWt")
+pet_wd2 <- pet_wd1[keeps]
+
+#print the results
+
+print(paste0("The Peterborough Survey points to a total of ", sum(pet_wd2$FinalWt), " external trips, in the morning peak period"))
+
+```
+
+Now plot the AM peak period trips to get an understanding of temporal distribution
+
+```{r}
+
+day_names <- c(
+  '3' = "Tuesday",
+  '4' = "Wednesday",
+  '5' = "Thursday"
+)
+
+# now plot the data
+ggplot(pet_wd2, aes(x = Time, y = FinalWt, fill = 'red')) +
+  geom_bar(stat = 'identity') + facet_grid(.~ DayofWeek, labeller=as_labeller(day_names)) + scale_x_discrete(labels = c("600-700", "700-800", "800-900"))
+
+```
+
+Unlike the other surveys, the Peterborough SUrvey is already coded in the UTM 17N system. SO we will do all the spatial joins in R, **so fasten your seat belts this will get complicated!!!**
+
+```{r batch in the files}
+
+#' first batch in the shapefiles that are needed for the spatial joins
+ext <- readOGR(wd, "GGH_externals")
+taz <- readOGR(wd, "GGH_TAZ")
+
+ext@data$RID <- rownames(ext@data)
+ext.df <- ext@data
+
+```
+
+
+```{r now the spatial joining begins, first origins}
+
+# Firs the ORIGINS. This would ideally be better in a function, but that can be done later.
+# create a SpatialPointsDataFrame from the survey points we have saved so far
+pet_pnts_o <- pet_wd2
+# define the coordinate fields and create the shapefile
+coordinates(pet_pnts_o) <- ~XO+YO
+pet_pnts_o_spdf <- SpatialPointsDataFrame(pet_pnts_o, pet_wd2)
+
+proj4string(pet_pnts_o_spdf) <- "+proj=utm +zone=17 +datum=NAD83 +units=m +no_defs +ellps=GRS80 +towgs84=0,0,0"
+
+# first do a point in poly with the TAZs
+pet_pnts_o_spdf1 <- point.in.poly(pet_pnts_o_spdf, taz)
+
+# drop unnecessary columns and add RID
+pet_pnts_o_spdf1@data <- subset(pet_pnts_o_spdf1@data, select = -OBJECTID)
+  pet_pnts_o_spdf1@data$RID <- 0
+
+  q <- pet_pnts_o_spdf1@data
+
+# now select all those points that do not lie in the TAzs. These will be assigned to the closest external point
+pet_pnts_o_spdf2 = pet_pnts_o_spdf[is.na(over(pet_pnts_o_spdf,as(taz,"SpatialPolygons"))),]
+# get rownames
+pet_pnts_o_spdf2@data$RID <- rownames(pet_pnts_o_spdf2@data)
+
+  p <- pet_pnts_o_spdf2@data
+
+  # get the euclidean distance between the points and the external zones
+d <- as.data.frame.matrix(gDistance(pet_pnts_o_spdf2, ext, byid = TRUE))
+  d <- add_rownames(d, "EXT")
+  
+ 
+# Now melt the data to long form to group it and select only those rows that have the minimum distance
+d.melt <- melt(d, id.var = "EXT")  
+  names(d.melt) <- c("EXT", "Pts", "dist")
+  
+min <- ddply (d.melt, .(Pts), summarise,
+              Min = min(dist),
+              EXT = EXT[which.min(dist)]) %>% subset(., select = - Min) %>% merge(., ext.df, by.x = "EXT", by.y = "RID", all.x = TRUE) %>% 
+  subset(., select = c(Pts, ID))
+
+# join the points to external zone equivalency back to the shapefile
+pet_pnts_o_spdf2@data = data.frame(pet_pnts_o_spdf2@data, 
+                                   min[match(pet_pnts_o_spdf2@data$RID, min$Pts),]) 
+
+# drop unnessary fields and rename columns
+drops <- c("Pts")
+  pet_pnts_o_spdf2 <- pet_pnts_o_spdf2[, !(names(pet_pnts_o_spdf2) %in% drops)]
+  
+  names(pet_pnts_o_spdf2)[9] <- "TAZ_NO"
+
+  # make copy of spatial points for Rbind
+pet_pnts_o_spdf3 <- pet_pnts_o_spdf1
+  pet_pnts_o_spdf3 <- spRbind(pet_pnts_o_spdf3, pet_pnts_o_spdf2)
+  
+  # get copy of dataframe for further analysis and joining to the pet_wd2 file
+  pp_o <- pet_pnts_o_spdf3@data 
+  pp_o$RID <- rownames(pp_o)
+  names(pp_o)[8] <- "TAZ_NO_O"
+
+```
+
+```{r now the spatial joining begins, first destinations}
+
+# Now DESTINATIONS. This would ideally be better in a function, but that can be done later.
+# create a SpatialPointsDataFrame from the survey points we have saved so far
+pet_pnts_d <- pet_wd2
+# define the coordinate fields and create the shapefile
+coordinates(pet_pnts_d) <- ~XD+YD
+pet_pnts_d_spdf <- SpatialPointsDataFrame(pet_pnts_d, pet_wd2)
+
+proj4string(pet_pnts_d_spdf) <- "+proj=utm +zone=17 +datum=NAD83 +units=m +no_defs +ellps=GRS80 +towgs84=0,0,0"
+
+# first do a point in poly with the TAZs
+pet_pnts_d_spdf1 <- point.in.poly(pet_pnts_d_spdf, taz)
+
+# drop unnecessary columns and add RID
+pet_pnts_d_spdf1@data <- subset(pet_pnts_d_spdf1@data, select = -OBJECTID)
+  pet_pnts_d_spdf1@data$RID <- 0
+
+  q <- pet_pnts_d_spdf1@data
+
+# now select all those points that do not lie in the TAzs. These will be assigned to the closest external point
+pet_pnts_d_spdf2 = pet_pnts_d_spdf[is.na(over(pet_pnts_d_spdf,as(taz,"SpatialPolygons"))),]
+# get rownames
+pet_pnts_d_spdf2@data$RID <- rownames(pet_pnts_d_spdf2@data)
+
+  p <- pet_pnts_d_spdf2@data
+
+  # get the euclidean distance between the points and the external zones
+d <- as.data.frame(gDistance(pet_pnts_d_spdf2, ext, byid = TRUE))
+  d <- add_rownames(d, "EXT")
+
+# Now melt the data to long form to group it and select only those rows that have the minimum distance
+d.melt <- melt(d, id.var = "EXT")  
+  names(d.melt) <- c("EXT", "Pts", "dist")
+  
+min <- ddply (d.melt, .(Pts), summarise,
+              Min = min(dist),
+              EXT = EXT[which.min(dist)]) %>% subset(., select = - Min) %>% merge(., ext.df, by.x = "EXT", by.y = "RID", all.x = TRUE) %>% 
+  subset(., select = c(Pts, ID))
+
+# join the points to external zone equivalency back to the shapefile
+pet_pnts_d_spdf2@data = data.frame(pet_pnts_d_spdf2@data, 
+                                   min[match(pet_pnts_d_spdf2@data$RID, min$Pts),]) 
+
+# drop unnessary fields and rename columns
+drops <- c("Pts")
+  pet_pnts_d_spdf2 <- pet_pnts_d_spdf2[, !(names(pet_pnts_d_spdf2) %in% drops)]
+  
+  names(pet_pnts_d_spdf2)[9] <- "TAZ_NO"
+
+  # make copy of spatial points for Rbind
+pet_pnts_d_spdf3 <- pet_pnts_d_spdf1
+  pet_pnts_d_spdf3 <- spRbind(pet_pnts_d_spdf3, pet_pnts_d_spdf2)
+  
+  # get copy of dataframe for further analysis and joining to the pet_wd2 file
+  pp_d <- pet_pnts_d_spdf3@data 
+  pp_d$RID <- rownames(pp_d)
+  names(pp_d)[8] <- "TAZ_NO_D"
+
+```
+
+NOw join the various dataframes to pet_wd2
+
+```{r join the data and clean it for output as External matrix}
+
+# first add a column of row names to be used for joining
+pet_wd2$RID <- rownames(pet_wd2)
+
+# reduce the number of columns to avoid cluttering the final data
+pp_o <- subset(pp_o, select = c("TAZ_NO_O", "RID"))
+pp_d <- subset(pp_d, select = c("TAZ_NO_D", "RID"))
+
+#' now join the datasets
+pet_wd3 <- merge(pet_wd2, pp_o, by.x = "RID", by.y ="RID", all.x = TRUE)
+pet_wd3 <- merge(pet_wd3, pp_d, by.x = "RID", by.y ="RID", all.x = TRUE)
+
+# only keep those records that have atleast one trip end outside the GGH and those that do not have the same origin and desitnation zone. This can happen because the surveys cover an area beyond the GGH area in the east.
+pet_wd4 <- subset(pet_wd3, TAZ_NO_O > 9400 | TAZ_NO_D > 9400) %>% subset(., TAZ_NO_O != TAZ_NO_D )
+
+```
+
+A number of O-D pairs are repeated so we need to summarise it here
+
+```{r summarise the trips by O-D}
+pet_wd4$join <- paste0(pet_wd4$TAZ_NO_O, pet_wd4$TAZ_NO_D)
+detach(package:plyr)
+pet_wd4.sum <- pet_wd4 %>% group_by(join) %>% summarise(finalWt = sum(FinalWt))
+
+pet_wd4.sum$O <- as.numeric(as.character(substr(pet_wd4.sum$join, 1, 4)))
+pet_wd4.sum$D <- as.numeric(as.character(substr(pet_wd4.sum$join, 5, 8)))
+
+# sort the trips and get rid of interchanges 9401-9402 and vice-versa because these trips would not necessarily hit the GGHM network
+pet_wd4.sum <- pet_wd4.sum[order(-pet_wd4.sum$finalWt), ]
+  pet_wd4.sum <- pet_wd4.sum[-c(1:4), ]
+  
+  write.csv(pet_wd4.sum, "PeterboroughSurvey.csv")
+  
+  print(paste0("The total number of Peterborough trips processed are ", sum(pet_wd4.sum$finalWt)))
+```
+
+Now merge all the abvove data with the GGHM V3 model external matrix.
+
+```{r batch in the GGHM V3.0 data}
+# read in the GGHM V3.0 external file that Nem output. This is an AM peak period matrix. S 
+old <- read.csv("old_auto_external_trips.csv")
+
+# create unique field for joining
+old$join <- paste0(old$Origin, old$Dest)
+
+# get those that match
+new_ext <- merge(old, pet_wd4.sum, by = "join", all = TRUE) 
+new_ext[is.na(new_ext)] <- 0
+
+# Get rid of unneccessary fields and transfer the data
+new_ext1 <- transform(new_ext, finalT = ifelse(new_ext$Trips == 0 | new_ext$Trips < new_ext$finalWt, 
+                                               new_ext$finalWt, new_ext$Trips))
+
+# prepare clean dataset for export and reporting results
+
+new_ext1 <- transform(new_ext1, O = ifelse(new_ext1$O == 0, new_ext1$Origin, new_ext1$O))
+new_ext1 <- transform(new_ext1, D = ifelse(new_ext1$D == 0, new_ext1$Dest, new_ext1$D))
+
+# only keep relevant columns
+new_ext1 <- subset(new_ext1, select = c(O, D, join, Trips, finalWt, finalT)) %>% transform(., diff = new_ext1$Trips-new_ext1$finalT)
+
+
+print(paste0("The total number of AM peak period trips from the Peterborough O-D Survey are ", sum(new_ext1$finalT)))
+
+```
+
+So what did all this data processing achieve in terms of **new trip making**.
+```{r, echo=FALSE}
+
+# Print the before and after results
+print(paste0("External trips based on the old GGH 3.0 matrices was ", sum(new_ext1$Trips), 
+             " and external trips based on the revised method are ", sum(new_ext1$finalT)))
+
+```
+
+
+Create a Dot plot forshowing the differences between what was in the GGHv3.0 versus what this revised procedure produces for only the common interchanges i.e. where a Simcoe trip was recorded
+
+```{r}
+
+# create difference field
+
+# only plot those records where the new peak trips field was non-zero
+new_ext2 <- subset(new_ext1, new_ext1$finalWt > 0)
+
+ggplot(new_ext2, aes(x=join, y=diff))+geom_point(color="red", size = 2, alpha = 1/2.5)+ theme(text = element_text(size = 10), axis.text.x = element_text(angle=90, vjust =1)) + geom_hline(yintercept = 0, color = "black") +
+  ggtitle("External Trip Differences (GGHM V3 - GGHMV4 with Peterborough)")
+
+```
+
+
+

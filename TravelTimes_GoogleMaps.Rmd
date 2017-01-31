@@ -1,0 +1,124 @@
+---
+title: "R Notebook for Calculating Travel Times using Google Map API"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(knitr); library(gmapsdistance); library(DT); library(png); library(grid)
+
+```
+
+#### Origin and Destination
+
+```{r}
+
+img <- readPNG("c:/personal/r/Gmap.png") 
+      grid.raster(img)
+      
+```
+
+
+#### Grab Travel Times from Google Maps
+
+Rick wanted to estimate travel times between a 100 or so pairs in the GGHM model and compare their times to those produced by Google Maps. I don't know if WAZE has an API to do the same, but by choosing known locations I can map the same ones using WAZE to compare the times being produced.
+
+The end goal is to be able to run the script across multiple days and times to establish the variance (SD) of travel times between O-D pairs in an effort to feed this into a Value of Reliability calculation. 
+
+```{r Google API}
+#' not sure if this is needed for the basic code, but if one wants to speicify a departure time and date then the package warrants that a Google Maps API Key be had. 
+
+value <- set.api.key("AIzaSyDZ6rgJHkAIIxMopKYhTIzlTN7-cH8bV6o")
+
+```
+
+Now for the main function. Thanks to Rodrigo Azuero and David Zarruk for making this function and the 'gmapdistance' package in general.
+
+```{r First OD pair (Home to MMM Office)}
+
+#' the Origin is roughly my house and the destination is roughly MMM's office. The mode chosen is Auto. Others can be done as well. I have also tested two options. First, using tolls; second, no tolls or Highway 407. Let the party begin.
+
+#' Further on, I will add in departure time and dates to see if this changes the results. If it does, then it would indicate that the times being spat out of the function are congestion dependent.
+
+#' Use Highway 407. 
+All <- gmapsdistance(origin = "43.872026+-79.246735",
+                         destination = "43.839765+-79.382004",
+                         mode = "driving")
+
+#' use local roads only i.e. avoid Highway 407
+noTolls <- gmapsdistance(origin = "43.872026+-79.246735",
+                         destination = "43.839765+-79.382004",
+                         mode = "driving",
+                         avoid = "tolls")
+
+
+#' create table to receive these results
+results <- data.frame(matrix(ncol = 2, nrow = 0))
+cname <- c("Auto Time (Mins)", "Auto Distance (kms)")
+colnames(results) <- cname
+
+#' save the results
+results[1,1] <- All[[1]]/60
+results[1,2] <- All[[2]]/1000
+
+results[2,1] <- noTolls[[1]]/60
+results[2,2] <- noTolls[[2]]/1000
+
+#' as reported by WAZE at 1:24 p.m. on 29th Dec, 2016, using Highway 407
+results[3,1] <- 1080/60
+results[3,2] <- 20000/1000
+
+#' as reported by WAZE at 1:24 p.m. on 29th Dec, 2016, NOT using Highway 407
+results[4,1] <- 1600/60
+results[4,2] <- 17000/1000
+
+```
+
+#### Do this for Wednesday January 11th, 2017. 
+
+Now note what GoogleMaps gives for projected time for Jan 11th, 2017 if your departure time is set for 8:15 in the morning. I am not sure what forecasted link travel times GoogleMaps uses to give you future travel times. As you will see that it is estimating that Wednesday's peak hour will be 5 minutes faster than my current time (Dec 29th, 13:16:00 or 1:15 in the afternoon). This does not quite make sense.
+```{r}
+#' Now get this for a January 11, Wednesday at 815 hours. This is by far the worst time to be in the Highway 7 corridor headed west towards the MMM Offices and Highway 404 interchanges.
+All_wed_noTolls <- gmapsdistance(origin = "43.872026+-79.246735",
+                         destination = "43.839765+-79.382004",
+                         mode = "driving",
+                         dep_date = "2017-01-11",
+                         dep_time = "8:15:00",
+                         avoid = "tolls")
+
+All_wed_Tolls <- gmapsdistance(origin = "43.872026+-79.246735",
+                         destination = "43.839765+-79.382004",
+                         mode = "driving",
+                         dep_date = "2017-01-11",
+                         dep_time = "8:15:00")
+
+#' add to the results table
+results[5,1] <- All_wed_Tolls[[1]]/60
+results[5,2] <- All_wed_Tolls[[2]]/1000
+
+results[6,1] <- All_wed_noTolls[[1]]/60
+results[6,2] <- All_wed_noTolls[[2]]/1000
+
+#' set rownames
+rownames(results) <- c("GMap Hwy407", "GMap NoTolls", "Waze Hwy407", "Waze NoTolls", "GMap Hwy407 Jan11", "GMap NoTolls Jan11")
+
+```
+
+#### Tabulate Results
+
+Unpack the results and compare them.
+
+```{r}
+#' Slot the results in a table
+datatable(results)
+
+```
+
+Story so far - It is feasible to use the gmapsfunction to grab travel times for the 100 O-D pairs or so that Rick wants. Google Maps times and those generated from WAZE don't always match, although close. Further, the forecasted times, based on a certain departure date and time that the Google Map API produced will need to be verified a bit more as they don't pass the **smell test** currently.

@@ -1,0 +1,268 @@
+---
+title: "Mausam Duggal"
+author: "Use the Simcoe survey to create external trip matrix for GGHM 4.0"
+date: "June 29, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(ggplot2); library(knitr); library(foreign); library(ggmap); library(rgdal); library(sp); library(png); library(grid)
+```
+
+Set working directory to start the process
+```{r Set Working Directory}
+# opts_knit$set(root.dir = 'c:/personal/r')
+ wd <- setwd("c:/personal/r")
+```
+
+Batch in the Simcoe file and clean it to get **rid of Weekend** travel. Also, we only need to keep those records that have one trip end at least outside the GGH area. Finally, also keep only those columns that are required for further analysis
+
+```{r batch in the simcoe survey}
+
+# read the file in its raw format after saving it out as a CSV
+simcoe <- read.csv("Final Simcoe Survey Fall Data.csv", stringsAsFactors = FALSE)
+
+  # Now only keep the Weekday travel
+  simcoe_wd <- subset(simcoe, Weekday.Weekend != "Weekend")
+
+    # Now use the NA values to subset the data further. This left over dataframe contains all those records 
+    # that have at least one trip end outside the GGH area
+    simcoe_wd1 <- subset(simcoe_wd, is.na(simcoe_wd["Updated.O.TAZ"]) | 
+                       is.na(simcoe_wd["Updated.D.TAZ"]))
+
+```
+
+Clean out any unnecssary columns and create an address column for the station at which the survey was conducted. Once done undertake geocoding of these stations and attach their Lat and Long to the dataframe. 
+
+```{r only keep relevant columns and create a column with correct address list}
+# create column list to keep
+
+keeps <- c("Survey.Number","Station", "Survey.Month", "Survey.Day", "Trip.Time.of.Day", "Updated.O.TAZ", "Updated.D.TAZ", 
+           "Updated.O.Lat", "Updated.O.Long", "Updated.D.Lat", "Updated.D.Long",
+           "Peak.Exp.Factor", "X24.Hr.Exp.Factor", "Origin.City", "Destination.City")
+simcoe_wd2 <- simcoe_wd1[keeps]
+
+  # remove all the characters before the hiphen in the station field and create an address field with Ontario appended
+  # to improve geocoding accuracy
+  simcoe_wd2$address <- gsub(".*-","",simcoe_wd2$Station) %>% paste0(., ",", " Ontario")
+  simcoe_wd2$address <- gsub( "west of" , " at ", simcoe_wd2$address)
+
+
+# collect the unique addresses and write them out. Then get rid of unnecessary words and also fix some addresses to make geocoding easy
+addresses <- simcoe_wd2 %>% group_by(address) %>% summarise(cnt = n())
+addresses$address[5] <- "Hwy 400 at Line 4 N, Moonstone, Ontario"
+addresses$address[7] <- "Hwy 89 at County Road 27, Ontario"
+
+```
+
+
+Undertake geocoding and merge the latlong to the master file. I am using **Google's GGMAP** API.
+```{r geocoding with GGmap, echo = FALSE, message = FALSE}
+
+# geocoding using ggmap
+geocodes <- geocode(as.character(addresses$address))
+addresses <- cbind(addresses, geocodes)
+
+```
+
+Now get the unique origins and destinations so that these can be used to generate ID values for each trip end. This will help in plotting the trip ends and also creating a ID for each unique location.
+
+```{r get unique origins and destinations based on lat/long}
+#' unique origins and populate with ID
+u_o <- unique(simcoe_wd2[c("Updated.O.Lat", "Updated.O.Long")])
+  u_o$OrigID <- paste0("O", seq(1, nrow(u_o), by =1))
+
+#' unique destinations and populate with ID
+u_d <- unique(simcoe_wd2[c("Updated.D.Lat", "Updated.D.Long")])
+  u_d$DestID <- paste0("D", seq(1, nrow(u_d), by =1))
+```
+
+Bring back the unique origin and destination IDs
+
+```{r copy back the unique IDs}
+
+#' first bring in the origin IDs
+
+simcoe_wd2 <- merge(simcoe_wd2, u_o, by.x = c("Updated.O.Lat", "Updated.O.Long"), 
+                    by.y = c("Updated.O.Lat", "Updated.O.Long"), all.x = TRUE)
+
+#' Now the Destination IDs
+simcoe_wd2 <- merge(simcoe_wd2, u_d, by.x = c("Updated.D.Lat", "Updated.D.Long"), 
+                    by.y = c("Updated.D.Lat", "Updated.D.Long"), all.x = TRUE)
+
+```
+
+
+Create a **SpatialPointsDataFrame** to understand where are the origins and destinations and extract the database table
+```{r make spatialpointsdataframe using the origin, destination, and stations}
+
+sp_points <- function(pts){
+  #' function to create a origin or destination points shapefile and write
+  #' our the dataframe as csv for viewing in ArcMap
+  cords <- pts[, 1:2]
+  pt_type <- SpatialPointsDataFrame(cords, pts) 
+    #' grab the dataframe to write out
+    pt_type_df <- pt_type@data
+    
+    list(pt_type, pt_type_df)
+}
+
+```
+
+Call the sp_points function to write out datatables for spatial processing in ArcMap. There is an error that crops up while projecting the lat/long to WGS 84 that also messes up the reprojection to UTM 17N. Thus, this aspect is handled in ArcMap. Spatial join could also be done in R and in fact is much faster. Instead of spending time fixing that, it was much easier to do the needful in ArcMap.
+
+```{r call sp_points function}
+origin <- sp_points(u_o)
+destination <- sp_points(u_d)
+
+# get second item in the lsit
+origin.df <- origin[[2]]
+destination.df <- destination[[2]]
+
+write.csv(origin.df, file = paste0(wd, "Origins_geo.csv"))
+write.csv(destination.df, file = paste0(wd, "Destinations_geo.csv"))
+
+```
+
+
+
+Summaries and Plot the results.
+
+```{r some quick summaries}
+
+# first daily
+sum_day <- simcoe_wd2 %>% group_by(Station,Trip.Time.of.Day) %>% summarise(daytrips = sum(X24.Hr.Exp.Factor)) 
+sum_day <- sum_day[order(sum_day$Trip.Time.of.Day),]
+
+ggplot(sum_day, aes(x = Trip.Time.of.Day, y = daytrips, fill = 'red')) +
+  geom_bar(stat = 'identity') + facet_wrap(~ Station)
+
+# second peak period
+sum_pk <- simcoe_wd2 %>% group_by(Station,Trip.Time.of.Day) %>% summarise(pktrips = sum(Peak.Exp.Factor)) 
+sum_pk <- sum_pk[order(sum_pk$Trip.Time.of.Day),]
+
+ggplot(sum_pk, aes(x = Trip.Time.of.Day, y = pktrips, fill = 'red')) +
+  geom_bar(stat = 'identity') + facet_wrap(~ Station)
+
+# Now just some regular summaries
+allday <- sum(simcoe_wd2$X24.Hr.Exp.Factor)
+  print(paste0("There are a total of ", allday, " all day trips captured by the Hwy 26 survey"))
+peak <- sum(simcoe_wd2$Peak.Exp.Factor)
+    print(paste0("There are a total of ", peak, " peak period trips captured by the Hwy 26 survey"))
+```
+
+Plot the ArcMap layout showing the **spatial distribution** of origins and destinations
+
+```{r, fig.width = 12, fig.show = 'hold'}
+
+img <- readPNG("SimcoeExternals.png") 
+      grid.raster(img)
+      
+      print("The red dots are destinations, and green dots are origins, while the green triangles are externals in the GGHM V4")
+```
+
+
+Now generate the OD matrices. First batch in the spatially joined shapefiles in ArcMap. The only thing we need from these shapefiles are the corressponding GGH TAZ number that they belong to. These TAZ #'s will be merged with the trip file to estimate the I-E, E-I, and E-E flows from the Simcoe Survey mapped to the GGHM 4.0 zone system
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+# batchin shapefiles
+
+orig_geo <- readOGR(wd, "Origin_geo_Simcoe_SpJoin3")
+dest_geo <- readOGR(wd, "Destination_geo_Simcoe_SpJoin3")
+```
+
+```{r Generate matrices}
+
+  # extract the data slots
+  orig_geo_df <- orig_geo@data
+  dest_geo_df <- dest_geo@data
+
+# Now merge the dataslots with the simcoe trips file
+simcoe_wd2 <- merge(simcoe_wd2, orig_geo_df, by = "OrigID", all.x = TRUE) %>% 
+  merge(., dest_geo_df, by = "DestID", all.x = TRUE)
+
+# Now generate two trip matrices. First, for the daily movement; 
+# and second, for the peak period movement
+
+mat_gen <- function(column, name) {
+  # function to create the trip matrix in question e.g. daily or peak period
+  
+  trip <- subset(simcoe_wd2, select = c("TAZ_NO.x", "TAZ_NO.y", column)) 
+  # rename columns
+  names(trip) <- c("Orig", "Dest", name)
+  
+  return(trip)
+}
+
+# Call the mat_gen function to generate the requisite matrices
+daily_trip <- mat_gen("X24.Hr.Exp.Factor", "DailyT")
+pk_trip <- mat_gen("Peak.Exp.Factor", "PeakT")
+
+# Given that the survey was conducted between 1000 - 1800 hours we will need to transpose the pk_trip matrix that corressponds to the PM peak period to the AM peak period. We have assumed symmetry in travel for the lack of any other information and confirmation from Mauricio @ MTO. 
+
+ names(pk_trip) <- c("Dest", "Orig", "PeakT") 
+ # sum up values to avoid duplication
+ pk_trip <- pk_trip %>% group_by(Orig, Dest) %>% summarise(PeakT = sum(PeakT))
+
+ #' write out the file
+ write.csv(pk_trip, "SimcoeSurveys.csv")
+ 
+```
+
+Add the external matrix from the GGHM V3.0. The goal is to do a comparison at the interchange level for each O-D pair that the Simcoe Data reports trips. If the GGHMV3.0 external trips are zero or less then replace with this processed data. If the GGHM V3.0 external trips are more than what we are reporting then keep them.
+
+```{r batch in the GGHM V3.0 data}
+# read in the GGHM V3.0 external file that Nem output. This is an AM peak period matrix. S 
+old <- read.csv("old_auto_external_trips.csv")
+
+# create unique field for joining
+old$join <- paste0(old$Origin, old$Dest)
+pk_trip$join <- paste0(pk_trip$Orig, pk_trip$Dest)
+
+# Now merge the old with the peak_trips using the unique field
+new_ext <- merge(old, pk_trip, by = "join", all = TRUE) 
+new_ext[is.na(new_ext)] <- 0
+
+# Get rid of unneccessary fields and transfer the data
+new_ext1 <- transform(new_ext, finalT = ifelse(new_ext$Trips == 0 | new_ext$Trips < new_ext$PeakT, 
+                                               new_ext$PeakT, new_ext$Trips))
+
+# prepare clean dataset for export and reporting results
+
+new_ext1 <- transform(new_ext1, O = ifelse(new_ext1$Origin == 0, new_ext1$Orig, new_ext1$Origin))
+new_ext1 <- transform(new_ext1, D = ifelse(new_ext1$Dest.x == 0, new_ext1$Dest.y, new_ext1$Dest.x))
+
+# only keep relevant columns
+new_ext1 <- subset(new_ext1, select = c(O, D, join, Trips, PeakT, finalT)) %>% transform(., diff = new_ext1$Trips-new_ext1$PeakT)
+
+```
+
+So what did all this data processing achieve in terms of **new trip making**.
+```{r, echo=FALSE}
+
+# Print the before and after results
+print(paste0("External trips based on the old GGH 3.0 matrices was ", sum(new_ext1$Trips), 
+             " and external trips based on the revised method are ", sum(new_ext1$finalT)))
+
+```
+
+
+Create a Dot plot forshowing the differences between what was in the GGHv3.0 versus what this revised procedure produces for only the common interchanges i.e. where a Simcoe trip was recorded
+
+```{r}
+
+# create difference field
+
+# only plot those records where the new peak trips field was non-zero
+new_ext2 <- subset(new_ext1, new_ext1$PeakT > 0)
+
+ggplot(new_ext2, aes(x=join, y=diff))+geom_point(color="red", size = 2, alpha = 1/2.5)+ theme(text = element_text(size = 10), axis.text.x = element_text(angle=90, vjust =1)) + geom_hline(yintercept = 0, color = "black") +
+  ggtitle("External Trip Differences (GGHM V3 - GGHMV4 with Simcoe)")
+
+```
+
+

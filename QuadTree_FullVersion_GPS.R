@@ -8,26 +8,18 @@ library(sp)
 ##########################################################################################
 
 #' Title: "Provincial Raster Grid Creation and Spatial Analysis"
-#' Programmer: "Mausam Duggal, Systems Analysis Group, WSP|PB"
-#' Algorithm Credits: "Rick Donnelly, Systems Analysis Group, WSP|PB", 
-#'            "Mausam Duggal, Systems Analysis Group, WSP|PB"
+#' Author: "Mausam Duggal"
 #' Date: "Nov 13th, 2015"
 
 #########################################################################################
 #' set user inputs needed to run the Quad Tree Algorithm, including directory
 #' Quad Tree depth, starting grid size, dwelling unit and GPS thresholds
 #' and name of the input geography
-#' 
-#' Upto Lines 80 are different user inputs required to run the Quad Tree
-#' An important note is that anytime a user wants to run the QT it is important
-#' to do so be deleting all the older files and folders that are created as a 
-#' result of the script. Also, while the working directory needs to be explicitly declared on lines 
-#' 27, 232, and 268. The final clipped shapefile is stored in the highest numbered folder.
 
 wd <- setwd("c:/personal/R/Zones")
 
 #+ set the tree depth for the Quad Tree, including the starting grid size
-n = 6
+n = 3
 
 #+ create directories to call later in the code
 for (i in 1:n) {
@@ -38,49 +30,46 @@ for (i in 1:n) {
 cl <- c(60000)  
 
 #+ set dwelling unit and GPS thresholds
-thold <- 2500
-gps <- 1500
+thold <- 2000
+gps <- 500
 
 #+ reduce margins for plotting
 par(mar=c(0,0,0,0))
 
 #+ set file name for geography and DA's and GPS
 geog.name <- "All_SO"
-dagps.name <- "All_Points2"
+dagps.name <- "All_Points"
 
-#' This code automatically deletes files in the working directory
-#' and as such it is recommended that it be used judiciously
+#' delete files
+for (i in (1:n)) {
+  mydir <- paste0(wd,"/split", i)
+  # phrase contained in
+  # the files to be deleted?
+  deletephrase <- paste0("R",i,"*.*.*")
+  
+  # Look at directory
+  dir(mydir)
+  # Figure out which files should be deleted
+  id <- grep(deletephrase, dir(mydir))
+  # Get the full path of the files to be deleted
+  todelete <- dir(mydir, full.names = TRUE)[id]
+  # BALEETED
+  unlink(todelete)  
+}
 
-# #' delete files
-# for (i in (1:n)) {
-#   mydir <- paste0(wd,"/split", i)
-#   # phrase contained in
-#   # the files to be deleted?
-#   deletephrase <- paste0("R",i,"*.*.*")
-#   
-#   # Look at directory
-#   dir(mydir)
-#   # Figure out which files should be deleted
-#   id <- grep(deletephrase, dir(mydir))
-#   # Get the full path of the files to be deleted
-#   todelete <- dir(mydir, full.names = TRUE)[id]
-#   # BALEETED
-#   unlink(todelete)  
-# }
-# 
-# mydir <- paste0(wd)
-# # phrase contained in
-# # the files to be deleted?
-# deletephrase <- paste0("Grids","*.*.*")
-# 
-# # Look at directory
-# dir(mydir)
-# # Figure out which files should be deleted
-# id <- grep(deletephrase, dir(mydir))
-# # Get the full path of the files to be deleted
-# todelete <- dir(mydir, full.names = TRUE)[id]
-# # BALEETED
-# unlink(todelete)
+mydir <- paste0(wd)
+# phrase contained in
+# the files to be deleted?
+deletephrase <- paste0("Grids","*.*.*")
+
+# Look at directory
+dir(mydir)
+# Figure out which files should be deleted
+id <- grep(deletephrase, dir(mydir))
+# Get the full path of the files to be deleted
+todelete <- dir(mydir, full.names = TRUE)[id]
+# BALEETED
+unlink(todelete)
 
 ############################ STEP1 : Read File and Define Grid #############################
 #' Read province wide polygon and create starting grid based on user input (cl)
@@ -145,7 +134,7 @@ G <- readOGR(wd, layer = paste0("G", b))
 #' this is the master dataframe of GRIDS (G) that have points inside them
 #' as well as DU's are greater than zero
 
-sp.join <- over(G, dagps[6:7], fn=sum) %>% subset(., dwell>0 | GPS>0)
+sp.join <- over(G, dagps[19:20], fn=sum) %>% subset(., dwell>0 | GPS>0)
 sp.join$gridID <- rownames(sp.join) 
 # conver to integer and add 1 because the FID is always 1 less than ID
 sp.join$gridID <- as.integer(sp.join$gridID) %>% +1       
@@ -299,3 +288,12 @@ proj4string(A) <- CRS(proj4string(G1))
 
   writeOGR(A1, layer = paste0(("QT_"), cl,("_"), cl/(2**n),("_"),("D"), thold, ("GPS"), gps), wd, driver="ESRI Shapefile", 
           overwrite_layer=T )
+
+
+
+
+
+
+
+
+  

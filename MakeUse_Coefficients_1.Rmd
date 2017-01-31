@@ -1,0 +1,96 @@
+---
+title: "Make and Use Coefficients"
+author: "Mausam Duggal"
+date: "September 2, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(knitr); library(reshape2); library(ggplot2)
+
+wd <- setwd("c:/personal/r")
+```
+
+### Calculate the Make and Use coefficients for the Commodity Flow Model. 
+
+Initially, the intention was to be able to use Tom's IO excel sheet to develop the tables. This proved to be difficult as the raw files provided by Tom were not readily usable for creating the tables. Further, Tom's raw data would not have allowed the creation of the Use table.
+
+Following the above, we decided to use the Make and Use coefficients developed for the Oregon model, with some modification to make it applicable to **TRESO**.
+
+Rick and I allocated NAICS 2 categories against the **Activity** column in the Oregon excel file. Further, we then created a new column called **Comm**. In this column, all records that in the **Commodity** field had a value that did not start with *SCTG_* were given the *SCTG260* code, as these represent non-transportable goods. 
+
+```{r I am sick and tired of NAs so a function to set them for good}
+
+f_rep <- function(df) {
+  # this function is used to set all NA values to zero in a dataframe
+df[is.na(df)] <- 0
+return(df)
+}
+
+```
+
+
+```{r read Oregon MakeUse file}
+oregon <- read.csv("MakeUse_Oregon.csv", stringsAsFactors = FALSE)    
+```
+
+#### Make the two tables.
+
+The tables contain categories such as *hh* and *SCTG60* (explained before), which have been removed to generate tables that only have NAICS and standard SCTG2 defintions.
+
+```{r USE Table }
+#' creat USE table first
+use <- oregon %>% subset(., MorU == 'U') %>% group_by(Comm, NAICS.Code) %>% 
+  summarise(coeff = sum(AbsCoeff)) %>% subset(., !grepl("^S", .$NAICS.Code)) %>%
+  subset(., NAICS.Code !='hh' & Comm != "SCTG60")
+#' set NAs to zero
+use <- f_rep(use)
+
+# cast into wide format
+use_wide <- dcast(use, Comm ~ NAICS.Code, value.var = "coeff")
+use_wide <- f_rep(use_wide)
+
+#' test that the use rows sum to 1 or less than that. 
+use_wide$Total <- rowSums(use_wide[2:20])
+
+#' the row sums need to sum up to 1. Given that the Oregon data also had non-transportation SCTG2 codes, I have scaled the values to sum to 1.
+use_wide1 <- use_wide[, -1]
+rownames(use_wide1) <- use_wide[, 1]
+
+use_wide2 <- use_wide1/use_wide1$Total 
+use_wide2$Total <- rowSums(use_wide2[1:19])
+
+```
+
+
+```{r MAKE Table }
+#' creat MAKE Table
+make <- oregon %>% subset(., MorU == 'M') %>% group_by(Comm, NAICS.Code) %>% 
+  summarise(coeff = sum(AbsCoeff))  %>% subset(., !grepl("^S", .$NAICS.Code)) %>%
+  subset(., NAICS.Code !='hh' & Comm != "SCTG60")
+
+#' set NAs to zero
+make <- f_rep(make)
+
+# cast into wide format
+make_wide <- dcast(make, Comm ~ NAICS.Code, value.var = "coeff")
+make_wide <- f_rep(make_wide)
+
+# get rid of text column
+make_wide1 <- make_wide[, -1]
+rownames(make_wide1) <- make_wide[, 1]
+
+#' test that the use cols sum to 1 or less than that. 
+make_wide1['Total', ] <- colSums(make_wide1)
+
+make_wide2 <- make_wide1/c(make_wide1[40,])
+colSums(make_wide2[1:39, ])
+
+make_wide2 <- as.data.frame(t(make_wide2))
+
+```
+

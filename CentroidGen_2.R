@@ -3,7 +3,8 @@ library(spatialEco)
 library(rgeos)
 library(rgdal)
 library(dplyr)
-library(data.table)
+require(PBSmapping)
+require(maptools)
 
 ##########################################################################################
 
@@ -18,7 +19,7 @@ wd <- setwd("c:/personal/R")
 #' input files for Quad tree and Truck Points 
 geog.name <- "QuadTree"
 #ps.name <- "TruckGPS_UTM"
-ps.name <- "Revised_DAs_centroids_3"
+ps.name <- "ActivityCentroids"
 
 ########################################################################################
 #' read QT and points shapefiles
@@ -76,8 +77,43 @@ data <- as.data.frame(activity.cc)
   spdf = SpatialPointsDataFrame(sp, data)
   ss <- spdf@data
 #' write shapefile
-  writeOGR(spdf, layer = paste0(ps.name,"activity_centroids1"), wd, driver="ESRI Shapefile", 
-           overwrite_layer=T )
+  writeOGR(spdf, layer = paste0(ps.name,"activity_centroids_Processed"), wd, 
+           driver="ESRI Shapefile", overwrite_layer=T )
+
+###############################################################################
+#' Now select all those QTs that did not have an activity centroid. Estimate their
+#' geometric centroid and merge with activity centroids processed file
+###############################################################################
+
+ss$processed <- 1
+
+# merge the points from SS to QT to identify the Quads that do need a 
+# geometric centroid
+qt.points@data = data.frame(qt.points@data, 
+                            ss[match(qt.points@data$ID, ss$ID),]) 
+
+#' set NA values to zero
+qt.points@data[is.na(qt.points@data)] <- 0
+
+  #' Now subset for points that need a centroid
+  qt.points.gc <- qt.points[qt.points@data$processed == 0, ]
+
+  #' write out shapefile for input into the Centroid Script
+  writeOGR(qt.points.gc, layer = paste0("GC_QT"), wd, 
+           drive = "ESRI Shapefile", overwrite_layer=T)
   
+  #' create centroids
+  centers <- SpatialPointsDataFrame(gCentroid(qt.points.gc, byid=TRUE), 
+                                        qt.points.gc@data, match.ID=FALSE)
+ 
+###############################################################################
+#' Create final centroid file for all the Quads
+############################################################################### 
 
+  #' Now combine the geometric centroids with the acitivy centroids
 
+  #'   strip unnecessary fields in CSD and DA level shapefiles
+  centers <- centers[, c("ID", "wtx", "wty", "val", "Y", "X")]
+
+  # make final QT activity centroid file
+  final.centroids <- rbind(spdf, centers)

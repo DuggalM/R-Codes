@@ -15,7 +15,7 @@ library(dplyr)
 
 #' set working directory and save all the files required for this procedure
 #' in the working folder.
-
+    
 wd <- setwd("c:/personal/r")
 
 #' declare all the file names that will be needed during this process, other than 
@@ -35,7 +35,6 @@ gghm.pol <- "GGH_TAZ"           # GGHM TAZ polygon
  
 
 area.thresh <- 14.0625    # this represents the area of a 3.75 Km Quad. 
-
 
 ###############################################################################
 #' Step 0: Batchini all the files and test for projection systems consistency

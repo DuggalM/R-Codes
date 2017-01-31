@@ -29,6 +29,7 @@ user <- 0
 #' then create pivot table with tonnes summed up
 #' finally rename columns to make compatible with Sankey Diagram
   rail <- read.csv("C:/Personal/R/Rail Traffic Summary.csv")  
+  
   #+ Unknown
     rail$Border_Enter<- sub("^$", "Unknown", rail$Border_Enter)
     rail$Border_Leave<- sub("^$", "Unknown", rail$Border_Leave)

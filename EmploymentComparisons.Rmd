@@ -1,0 +1,122 @@
+---
+title: "Compare the various employment data sources"
+author: "Mausam Duggal"
+date: "August 15, 2016"
+output: html_document
+---
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(knitr); library(reshape2); library(foreign); library(ggplot2); library(DT); library(png); library(grid)
+
+wd <- setwd("c:/personal/r")
+```
+
+#### Batch in the various datasets
+
+Bring in Tom's employment numbers and Rick's firm synthesis data. Also batch in the DA to CSD equiv file.
+
+Of note, Rick used the **Pitney Bowes Canadian Business Points** data and created a subset of those points for comparison with the 2011 NHS and then further on for doing firm synthesis. Need to check with Rick though if this is what was done, but there is a **firslook.R** file on PS that hints at this.
+
+
+```{r I am sick and tired of NAs so a function to set them for good}
+
+f_rep <- function(df) {
+  # this function is used to set all NA values to zero in a dataframe
+df[is.na(df)] <- 0
+return(df)
+}
+
+```
+
+
+
+```{r NHS}
+# DA to CSD equivalency file
+equiv <- read.dbf("DA_CSD.dbf", as.is = TRUE) %>% 
+  subset(., select = c("DAUID", "CSDUID")) %>% 
+  transform(., DAUID = as.numeric(DAUID), CSDUID = as.numeric(CSDUID)) %>% setNames(., c("DAUID", "csd_id"))
+
+# Tom's files
+tom_emp <- read.csv("c:/personal/r/TOM_2011employment.csv", stringsAsFactors = FALSE) %>% .[-40,]
+
+# Rick and Peter's firm synthesis
+firm_emp <- read.csv("c:/personal/r/firms.csv", stringsAsFactors = FALSE)
+  # Set NAs to zero by calling the function
+  firm_emp <- f_rep(firm_emp)
+
+# The controld totals that Peter used at the CSD level for firm synthesis. For some reason there are CSDs 
+# outside Ontario, most likely Gatineau. So strip those off. These controls also serve as the Census numbers 
+# as they were derived from the POW data, as per Peter.
+contrl <- read.csv("c:/personal/r/csd_employment_targets.csv", stringsAsFactors = FALSE) %>% 
+  subset(., grepl("^35", .$csd_id))
+
+```
+
+Join the control totals to the firm_emp file
+
+```{r, echo = FALSE}
+firm_emp_grp <- subset(firm_emp, taz > 0) %>% group_by(csd_id, naics_code) %>% summarise(emp = sum(n_employees)) 
+  firm_emp_grp$naics_code <- gsub("\\-.*", "", firm_emp_grp$naics_code)
+  firm_emp_grp <- transform(firm_emp_grp, naics_code = as.numeric(naics_code))
+
+```
+
+Tom's data needs to be converted into the long format
+
+```{r, echo = FALSE}
+
+tom_emp1 <- tom_emp[-1] %>% melt(., id.vars = "Naics2") %>% subset(., value > 0) %>% 
+  setNames(., c("naics_code", "csd_id", "TomEmp"))  
+
+  # strip out the X character and set csd field to numeric
+  tom_emp1$csd_id <- substr(tom_emp1$csd_id, 2,8)
+    tom_emp1 <- transform(tom_emp1, csd_id = as.numeric(csd_id)) %>% group_by(csd_id, naics_code) %>% summarise(TomEmp = sum(TomEmp))
+  
+```
+
+#### Plot the differences
+
+```{r}
+
+# Join the data together to plot the differences 
+emp_summ <- merge(tom_emp1, firm_emp_grp, by.x = c("csd_id", "naics_code"), by.y = c("csd_id", "naics_code"), all.x = TRUE) %>% 
+  transform(., empdiff = TomEmp - emp)
+
+# set NA to zero
+emp_summ <- f_rep(emp_summ)
+
+# Plot the differences
+ggplot(emp_summ, aes(x=csd_id, y=empdiff))+geom_line(color="grey")+geom_point(color="red")+
+  ggtitle("Employment Differences (Tom's numbers - Firm Synthesis)") 
+```
+
+#### Create final comparison table
+
+```{r}
+
+emp_summ_naics <- emp_summ %>% group_by(naics_code) %>% summarise(TomEmp = sum(TomEmp), emp = sum(emp)) %>% 
+  transform(., Diff = TomEmp-emp) 
+
+# make naics into row names
+emp_summ_naics1 <- emp_summ_naics[, -1]
+  rownames(emp_summ_naics1) <- emp_summ_naics[,1]
+   # add column sums
+   emp_summ_naics1["Total",] <- colSums(emp_summ_naics1)
+
+# get rid of decimals
+emp_summ_naics1[] <- lapply(emp_summ_naics1, round, 0)
+
+datatable(emp_summ_naics1)
+
+```
+
+### STATSCAN Information
+
+Batch in the image showing StatsCAN data for 2011. This figure shows the total employment in Ontario in 2011.
+
+```{r, fig.width = 12, fig.height = 8}
+
+img <- readPNG("LFS.png") 
+      grid.raster(img)
+
+```

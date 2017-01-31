@@ -1,0 +1,170 @@
+---
+title: "Network Culling After Effects"
+author: "Mausam Duggal"
+date: "August 13, 2016"
+output: html_document
+---
+
+```{r init, echo=FALSE, message=FALSE}
+library(dplyr); library(knitr); library(reshape2); library(DT)
+
+wd <- setwd("c:/personal/r")
+```
+
+### Entire Network
+
+#### Batch in the base network from Scenario 15. 
+
+The speeds and capacities in this network are now rationalized for the most part. The main issue lay in how the TRANS network defined speeds and capacities. It seems that a lot of their capacities were "calibrated". This presents some challenges as this means that generic priniciple of traffic flow cannot be programmed. We have rectified this to a great extent, however, any additional adjustment will be made on a per link basis. Further, certain speeds in the TRANS model were checked against google street view and corrections made.
+
+This also means that the vdf in the networks which are generally being used to represent a type of road class cannot be relied upon as is. But this is not a problem as the V4 VDF logic is being programmed in Python for running it across the entire network, although care has to be taken when deploying it for links outside the GGH as the V4 philosophy is derived on adjacent land use densities as well, which has not been calculated for the Provincial network as yet. These are not critical issues now as we are predominantly using a zero iteration assignment but just something to be cognizant of as we move ahead.
+
+
+```{r Scenario 15}
+
+lkreg <- read.csv("c:/personal/r/linkregion.csv", stringsAsFactors = FALSE, col.names = c("region", "volume")) 
+links <- read.csv("c:/personal/r/base_network_15.csv", stringsAsFactors = FALSE) %>% 
+  cbind(., lkreg) %>% 
+  subset(., Data3 != 9999)  # get rid of centroid connectors
+
+```
+
+Bryce has coded the links by region where 1 is the USA, 2 is Rest of Canada, 3 is Ontario (no GGH), 4 is the GGH
+
+```{r}
+
+links <- transform(links, RegName = ifelse(region == 1, "USA",
+                                           ifelse(region == 2, "Rest of Canada",
+                                                  ifelse(region == 3, "Ontario - No GGH", "GGH"))))
+
+```
+
+
+Group links by capacity and speed for entire Provincial network
+
+```{r}
+
+# redefine columns to something more easily understood
+cols <- c("Speed", "Capacity", "RegName", "NumLinks")
+
+lk_grp <- links %>% group_by(Data2, Data3, RegName) %>% summarise(nolinks = n()) 
+  colnames(lk_grp) <- cols
+
+```
+
+Cast the tables in Rick's desired format. As one will see from this table there are a few anomalies as yet, whereby some low speed roads have higher capacities e.g. a link with 40 km/hr and 1200 capacity. These are **clover leaf** ramps outisde the GGH and the speed came from the PCVM. We intend to increase this to 60km/hr at least because the 40km/hr is more for trucks, while holding the capacity at 1200.
+
+```{r}
+
+lk_grp <- dcast(lk_grp, Speed + Capacity ~ RegName, value.var = "NumLinks")
+  lk_grp[is.na(lk_grp)] <- 0
+
+   # add column sums
+   lk_grp["Total",] <- colSums(lk_grp)
+  
+# display the table
+datatable(lk_grp)
+
+```
+
+#### By Functional Class 
+
+There are too many categories here and thus I have classified the roads into broad functional classes using the logic below. We will use this logic to also clean up the network rules further.
+
+```{r}
+# First the ramps
+links$funcclass[links$Data2 == 40 & links$Data3 == 1200] <- "Ramp"
+links$funcclass[links$Data2 == 50 & links$Data3 == 1000] <- "Ramp"
+links$funcclass[links$Data2 == 50 & links$Data3 == 1200] <- "Ramp"
+links$funcclass[links$Data2 == 70 & links$Data3 == 1500] <- "Ramp"
+links$funcclass[links$Data2 == 70 & links$Data3 == 1400] <- "Ramp"
+links$funcclass[links$Data2 == 60 & links$Data3 == 1400] <- "Ramp"
+links$funcclass[links$Data2 == 60 & links$Data3 == 1600] <- "Ramp"
+
+# Unpaved
+links$funcclass[links$Data2 == 30 & links$Data3 == 200] <- "Unpaved"
+
+# Locals
+links$funcclass[links$Data2 < 41 & (links$Data3 > 199 & links$Data3 < 401)] <- "Local"
+
+# Collectors
+links$funcclass[links$Data2 == 40 & (links$Data3 > 400 & links$Data3 < 601)] <- "Collector"
+
+# Minor Arterial
+links$funcclass[(links$Data2 > 40 & links$Data2 < 61) & (links$Data3 > 499 & links$Data3 < 801)] <- "Minor Arterial"
+
+# Major Arterial
+links$funcclass[(links$Data2 > 50 & links$Data2 < 71) & (links$Data3 > 599 & links$Data3 < 1201)] <- "Major Arterial"
+
+# Highway (e.g. is Hwy 50 in Peel)
+links$funcclass[(links$Data2 > 70 & links$Data2 < 100) & (links$Data3 < 1601)] <- "Highway"
+
+# Freeway (400 series)
+links$funcclass[links$Data2 > 99] <- "Freeway"
+
+```
+
+Group by Functional Class
+
+```{r}
+
+cols <- c("Funclass", "RegName", "NumLinks")
+
+lk_grp1 <- links %>% group_by(funcclass, RegName) %>% summarise(nolinks = n()) 
+  colnames(lk_grp1) <- cols
+
+lk_grp1 <- dcast(lk_grp1, Funclass ~ RegName, value.var = "NumLinks") 
+  lk_grp1[is.na(lk_grp1)] <- 0
+  
+  # make functional class into rownames
+  lk_grp2 <- lk_grp1[, -1]
+  rownames(lk_grp2) <- lk_grp1[,1]
+  
+   # add column sums and cumulative
+   lk_grp2["Total",] <- colSums(lk_grp2) 
+   lk_grp2[, "Total"] <- rowSums(lk_grp2)
+     lk_grp2 <- transform(lk_grp2, Cumulative = cumsum(Total))
+   
+
+  # display the table
+datatable(lk_grp2)
+
+```
+
+### Assignable Network
+
+The assignable network was gained using a scalar matrix of 1 for zero iterations.
+
+First subset the links to only keep those that have a **volume of greater than 0**. There are no connectors in this.
+
+```{r}
+
+ass <- subset(links, volume >0)
+  
+```
+
+Group by Functional Class for the assinable network
+
+```{r}
+
+cols <- c("Funclass", "RegName", "NumLinks")
+
+ass_grp <- ass %>% group_by(funcclass, RegName) %>% summarise(nolinks = n()) 
+  colnames(ass_grp) <- cols
+
+ass_grp1 <- dcast(ass_grp, Funclass ~ RegName, value.var = "NumLinks")
+  ass_grp1[is.na(ass_grp1)] <- 0
+  
+  # make functional class into rownames
+  ass_grp2 <- ass_grp1[, -1]
+  rownames(ass_grp2) <- ass_grp1[,1]
+   # add column sums
+   ass_grp2["Total",] <- colSums(ass_grp2)
+   ass_grp2[, "Total"] <- rowSums(ass_grp2)
+     ass_grp2 <- transform(ass_grp2, Cumulative = cumsum(Total))   
+
+  # display the table
+datatable(ass_grp2)
+
+```
+
