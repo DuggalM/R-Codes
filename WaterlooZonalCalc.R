@@ -10,7 +10,7 @@ wd <- setwd("c:/personal/r")
 
 #' read the GGHM output of households that have auto sufficiency and income
 #'  imputation values
-hh <- read.csv("households_out.csv", stringsAsFactors = FALSE)
+hh <- read.csv("c:/personal/r/households_out.csv", stringsAsFactors = FALSE)
 
 #' create IncCat field
 hh <- transform(hh, IncCat = ifelse(hh$hhinc <= 60000, 1, 2)) 
@@ -101,4 +101,8 @@ wat_1$Prop22 <- means$Prop22
 wat_df_final <- rbind(wat_1, wat_df3)
   wat_df_final$tot <- rowSums(wat_df_final[18:23])
   
-  write.csv(wat_df_final, "proportionsWaterloo.csv")
+  write.csv(wat_df_final, "c:/personal/r/proportionsWaterloo.csv")
+  
+#' create ggplot showing frequency distrbution within the Region, but first batch in the 2011 Pop
+pop_11 <- read.csv("c:/projects/Waterloo/Pop_2011.csv", stringsAsFactors = FALSE)
+ggplot

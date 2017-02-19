@@ -65,7 +65,7 @@ datatable(f)
 #' Plot the mode splits
 ggplot(ms, aes(y = Pct, x = factor(Q7), fill = factor(Pct))) + 
   geom_bar(stat = "identity") + ggtitle("Mode Choice for Higher Secondary Trips in RMOW") + 
-  theme(axis.text = element_text(size = 8)) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+  theme(axis.text = element_text(size = 10)) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
 ```
 
 
@@ -212,6 +212,7 @@ v4hbu1 <- merge(v4hbu1, eq1, by.x = "Origin", by.y = "TTS_Zone", all.x = TRUE)
 #' now get V4 origins that have one trip end as HBU
 v4hbu_sz <- v4hbu1 %>% group_by(SZ) %>% summarise(ToTPALink_V4 = sum(Total)) %>% 
   transform(., PctLink_V4 = round(.$ToTPALink_V4/sum(.$ToTPALink_V4)*100),2) %>% subset(., select = -c(X2))
+
 ``` 
 
 ### Combine all the **Spatial Patterns** together
@@ -232,7 +233,7 @@ final_long <- subset(final, select = c(SZ, PctWat_Sy, PctWat, PctLink_V4)) %>% m
 
 # now plot
 ggplot(final_long, aes(x = SZ, y = value, fill = factor(variable))) + geom_bar(sta="identity") + 
-  scale_fill_discrete(name = "Data Sources") +  
+  scale_fill_discrete(name = "Data Sources") +  theme(axis.text = element_text(size = 12)) +
   ggtitle("Percent of University Residents by SuperZone for each Dataset")
 
 ```
@@ -248,10 +249,11 @@ ggplot(final_long, aes(x = SZ, y = value, fill = factor(variable))) + geom_bar(s
 ```{r}
 #' Recall that the V4 produces linkages from the Long Term Choice. We also know from the V4 that it estimates close to 70% of the students that attend university in Waterloo Region live within the Region. Additionally, the Survey has shown that close to 80% of the total enrolled students are making a Daily Trip. Assuming a 52000 enrollment, the 80% is around 41000 student linkages. Further, given that only 70% of these students live within the Region, we are left with total linkages of 28700. Thus, if these linkages are multiplied by 2 we will get Daily PAs. The V4 HBU matrix currently has 19000 odd linkages. So this will be scaled and then multiplied by 2 to get daily PAs.
 
-#' scale the V4 HBU linkages to 28700.
+#' scale the V4 HBU linkages to 36400.
 final <- transform(final, ToTPALink_V4_S = (ToTPALink_V4/sum(final$ToTPALink_V4))*36400) 
 #' these are the revised scaled PA
 newPA <- final[, c(1,8)]
+
 
 #' transfer the scaled values back to the original V4 linkages. 
 totsz <- v4hbu1 %>% group_by(SZ) %>% summarise(TotalSz = sum(Total))
@@ -281,6 +283,7 @@ colnames(v4hbu4) <- c("OrigZoneNo", "DestZoneNo", "HBU_PA")
 
 sum(v4hbu4$HBU_PA)
 write.csv(v4hbu4, "HBU_DailyPA.csv", row.names = FALSE)
+
 ```
 
 ```{r}

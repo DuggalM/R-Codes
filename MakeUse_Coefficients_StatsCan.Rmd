@@ -42,7 +42,7 @@ return(df)
 
 
 ```{r read Oregon MakeUse file}
-mu <- read.csv("I-O_Structure_CAD_Economy.csv", stringsAsFactors = FALSE)    
+mu <- read.csv("c:/personal/r/I-O_Structure_CAD_Economy.csv", stringsAsFactors = FALSE)    
 ```
 
 #### Make the two tables.
@@ -51,8 +51,8 @@ The tables contains many categories in the commodity and industry category that 
 
 ```{r}
 #' batch in the unique NAICS and Commodity equivalencies
-naics <- read.csv("IndustryCodes.csv", stringsAsFactors = FALSE) 
-comm <- read.csv("CommodityCodes.csv", stringsAsFactors = FALSE) %>% f_rep(.)
+naics <- read.csv("c:/personal/r/IndustryCodes.csv", stringsAsFactors = FALSE) 
+comm <- read.csv("c:/personal/r/CommodityCodes.csv", stringsAsFactors = FALSE) %>% f_rep(.)
 
 ```
 
@@ -96,7 +96,7 @@ write.csv(make_wide2, "MakeTable.csv")
 
 ```{r USE TABLE}
 # Group by NAICS and SCTG to create the make table
-use <- mu1 %>% group_by(SCTG2, NAICS2) %>% summarise(Tval = sum(Value))
+use <- mu1 %>% subset(., SUTABLE = "Use") %>% group_by(SCTG2, NAICS2) %>% summarise(Tval = sum(Value))
 # cast into wide format
 use_wide <- dcast(use, SCTG2 ~ NAICS2, value.var = "Tval") %>% f_rep(.)
 
