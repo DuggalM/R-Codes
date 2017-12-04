@@ -2,6 +2,14 @@ import pandas as pd
 import os
 from collections import OrderedDict
 import json
+import logging
+
+def setupLogger():
+    logger = logging.getLogger("super_model")
+    logger.setLevel(logging.INFO)
+    fh = logging.FileHandler(r"c:/personal/model.log")
+    fh.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(funcName)s - %(levelname)s - %(message)s"))
+
 
 # function to concatenate two dfs
 def concat_df(df1, df2, num):
@@ -16,6 +24,8 @@ def concat_df(df1, df2, num):
     # once sampled, now concatenate the information back to the household dataframe
     df1.reset_index(drop=True, inplace=True)
     df2.reset_index(drop=True, inplace=True)
+    df1 = df1.loc[:,~df1.columns.duplicated()]
+    df2 = df2.loc[:,~df2.columns.duplicated()]
     df1 = pd.concat([df1, df2], axis=num)
 
     return df1

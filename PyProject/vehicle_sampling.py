@@ -14,7 +14,9 @@ import control_parameters
 from balsa.cheval import sample_from_weights
 from control_parameters import EarlyValidFiles
 import common
+import logging
 
+logger = logging.getLogger("super_model")
 
 class VehicleSampling(object):
     """
@@ -39,10 +41,10 @@ class VehicleSampling(object):
 
         # check if files exist. If not, then stop program
         if not self.validation():
-            print("validataion failed")
+            logger.info("validataion failed")
             exit(0)
         else:
-            print("validataion success")
+            logger.info("validataion success")
 
         # batch requisite json file for DTYPE
         self.dataFrameDtype = common.dtype_defintions(control_parameters.dirListing,
@@ -171,9 +173,11 @@ class VehicleSampling(object):
         # Add in a descriptor for the market segment to make it easy to understand
         trips = pd.merge(trips, hh, on='hhid', how='left')
 
-        # map the information
+        # map the information and add flag
         trips['mseg'] = trips['market_seg'].map(market_seg_def)
         trips['vseg'] = trips['hh_veh_type'].map(veh_seg_def)
+        trips['flag'] = trips['taz_i'].astype(str) + trips['taz_j'].astype(str) + trips['market_seg'].astype(str)
+
 
         return trips
 

@@ -11,6 +11,7 @@ seed = 12345
 # files for each trip purpose and time period in the binary probability list
 chunk = 2
 
+
 ########################################################################################################################
 # EARLY VALIDATION FILES
 # files that the validate_input module needs to check for and stop the code if they don't exist
@@ -29,11 +30,14 @@ class EarlyValidFiles(object):
     @classmethod
     def getJSONFileList(cls):
         return [
-                cls.DTYPE_EGRESS_PROB, cls.DTYPE_ELEMENTAL_PROB, cls.DTYPE_HOUSEHOLDS,
-                cls.DTYPE_STATION_CHOICE, cls.DTYPE_TRIPS_PROCESSED, cls.DTYPE_TRIPS]
+            cls.DTYPE_EGRESS_PROB, cls.DTYPE_ELEMENTAL_PROB, cls.DTYPE_HOUSEHOLDS,
+            cls.DTYPE_STATION_CHOICE, cls.DTYPE_TRIPS_PROCESSED, cls.DTYPE_TRIPS]
+
     @classmethod
     def getCSVFileList(cls):
         return [cls.HOUSE_HOLDS_OUT, cls.TRIPS_OUT, cls.SAMPLE_VEH_PROPS]
+
+
 ########################################################################################################################
 # BINARY PROBABILITIES
 # Bill's binary probability and access/egress station ids split into chunks. There must be:
@@ -43,14 +47,18 @@ class EarlyValidFiles(object):
 
 # TODO-mausam add in the remaining trip purposes as well
 
-binary_dict = [
-    ('hbw_mode_peak_bin',['hbw_peak_tresodat_%s.bin'%str(i) for i in range(1,chunk+1)]),
-    ('hbw_mode_offpeak_bin',['hbw_offpeak_tresosta_%s.bin'%str(i) for i in range(1,chunk+1)]),
-    ('hbw_stn_peak_bin', ['hbw_peak_tresosta_%s.bin'%str(i) for i in range(1,chunk+1)]),
-    ('hbw_stn_offpeak_bin', ['hbw_offpeak_tresosta_%s.bin'%str(i) for i in range(1,chunk+1)]),
-    ('hbw_egg_peak_bin', ['hbw_peak_tresoegr_%s.bin'%str(i) for i in range(1,chunk+1)]),
-    ('hbw_egg_offpeak_bin', ['hbw_offpeak_tresoegr_%s.bin'%str(i) for i in range(1,chunk+1)])
-]
+binary_dict = {
+    'hbw': [('hbw_mode_peak_bin', ['hbw_peak_tresodat_%s.bin' % str(i) for i in range(1, chunk + 1)]),
+            ('hbw_mode_offpeak_bin', ['hbw_offpeak_tresosta_%s.bin' % str(i) for i in range(1, chunk + 1)]),
+            ('hbw_stn_peak_bin', ['hbw_peak_tresosta_%s.bin' % str(i) for i in range(1, chunk + 1)]),
+            ('hbw_stn_offpeak_bin', ['hbw_offpeak_tresosta_%s.bin' % str(i) for i in range(1, chunk + 1)]),
+            ('hbw_egg_peak_bin', ['hbw_peak_tresoegr_%s.bin' % str(i) for i in range(1, chunk + 1)]),
+            ('hbw_egg_offpeak_bin', ['hbw_offpeak_tresoegr_%s.bin' % str(i) for i in range(1, chunk + 1)])],
 
-
-
+    'hbs': [('hbs_mode_peak_bin', ['hbs_peak_tresodat_%s.bin' % str(i) for i in range(1, chunk + 1)]),
+            ('hbs_mode_offpeak_bin', ['hbs_offpeak_tresosta_%s.bin' % str(i) for i in range(1, chunk + 1)]),
+            ('hbs_stn_peak_bin', ['hbs_peak_tresosta_%s.bin' % str(i) for i in range(1, chunk + 1)]),
+            ('hbs_stn_offpeak_bin', ['hbs_offpeak_tresosta_%s.bin' % str(i) for i in range(1, chunk + 1)]),
+            ('hbs_egg_peak_bin', ['hbs_peak_tresoegr_%s.bin' % str(i) for i in range(1, chunk + 1)]),
+            ('hbs_egg_offpeak_bin', ['hbs_offpeak_tresoegr_%s.bin' % str(i) for i in range(1, chunk + 1)])],
+}
