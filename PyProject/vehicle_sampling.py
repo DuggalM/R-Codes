@@ -39,10 +39,10 @@ class VehicleSampling(object):
 
         # check if files exist. If not, then stop program
         if not self.validation():
-            print("validataion failed")
+            common.logger.info("validataion failed")
             exit(0)
         else:
-            print("validataion success")
+            common.logger.info("validataion success")
 
         # batch requisite json file for DTYPE
         self.dataFrameDtype = common.dtype_defintions(control_parameters.dirListing,
@@ -50,6 +50,11 @@ class VehicleSampling(object):
 
 
     def validation(self):
+        """
+
+
+        :return:
+        """
 
         _errorMessage = ""
 
@@ -61,10 +66,11 @@ class VehicleSampling(object):
         for file in (fileList):
 
             check_existence = common.file_existence(control_parameters.dirListing, file)
+            common.logger.info("%s necessary to run the program found in the directory" % file)
 
             if not common.file_existence(control_parameters.dirListing, file) :
+                common.logger.info("%s necessary to run the program not found in the directory" %file)
                 return False
-
 
         return True
 
@@ -81,6 +87,7 @@ class VehicleSampling(object):
 
         # join the vehicle probabilities to the households so that we can sample from them. It is easy enough
         # to attach the probabilities because we know the market segment of each household.
+
         hh_vehprob = pd.merge(hh_file, vehtype_file, left_on=['taz', 'market_seg'],
                               right_on=['taz', 'market_seg'], how='left')
 
@@ -93,6 +100,7 @@ class VehicleSampling(object):
 
         hh_file = common.concat_df(hh_file, sample_df, 1)
 
+
         return hh_file
 
     def run(self):
@@ -104,6 +112,7 @@ class VehicleSampling(object):
         """
 
         # bring in the GGHMV4's household and trip list files and attach a market segment to each household
+        common.logger.info("Batch in the household and trips list files from a gghm run")
         hh = pd.read_csv(os.path.join(control_parameters.dirListing, EarlyValidFiles.HOUSE_HOLDS_OUT))
         trips = pd.read_csv(os.path.join(control_parameters.dirListing, EarlyValidFiles.TRIPS_OUT))
         hh = common.market_segment(hh)  # tag each household by the market segment it belongs to
@@ -128,12 +137,12 @@ class VehicleSampling(object):
         veh_type['mseg'] = veh_type['mseg1'] + '_' + veh_type['mseg2']
 
         # add in integer based market segment category
-        veh_type.loc[(veh_type['mseg'] == 'nocar_low'), 'market_seg'] = 0
-        veh_type.loc[(veh_type['mseg'] == 'nocar_high'), 'market_seg'] = 1
-        veh_type.loc[(veh_type['mseg'] == 'insuff_low'), 'market_seg'] = 2
-        veh_type.loc[(veh_type['mseg'] == 'insuff_high'), 'market_seg'] = 3
-        veh_type.loc[(veh_type['mseg'] == 'suff_low'), 'market_seg'] = 4
-        veh_type.loc[(veh_type['mseg'] == 'suff_high'), 'market_seg'] = 5
+        veh_type.loc[(veh_type['mseg'] == 'nocar_low'), 'market_seg'] = 1
+        veh_type.loc[(veh_type['mseg'] == 'nocar_high'), 'market_seg'] = 2
+        veh_type.loc[(veh_type['mseg'] == 'insuff_low'), 'market_seg'] = 3
+        veh_type.loc[(veh_type['mseg'] == 'insuff_high'), 'market_seg'] = 4
+        veh_type.loc[(veh_type['mseg'] == 'suff_low'), 'market_seg'] = 5
+        veh_type.loc[(veh_type['mseg'] == 'suff_high'), 'market_seg'] = 6
         veh_type['market_seg'] = veh_type['market_seg'].astype('int8')
 
         # extract the vehicle type and drop unncessary columns
@@ -147,6 +156,7 @@ class VehicleSampling(object):
         # RUN VEHICLE SAMPLING
 
         # invoke the class and run the vehicle sampling method.
+        common.logger.info("Add vehicle type to every household")
         hh = self.assign_vehtype(hh, veh_type, self.seed)
 
         # dictionary of market and vehicle segment key and values
@@ -171,9 +181,12 @@ class VehicleSampling(object):
         # Add in a descriptor for the market segment to make it easy to understand
         trips = pd.merge(trips, hh, on='hhid', how='left')
 
-        # map the information
+        # map the information and add flag
         trips['mseg'] = trips['market_seg'].map(market_seg_def)
         trips['vseg'] = trips['hh_veh_type'].map(veh_seg_def)
+        trips['flag'] = trips['taz_i'].astype(str) + trips['taz_j'].astype(str) + trips['market_seg'].astype(str)
 
+        common.logger.info("Vehicle type information transferred to every trip record via household. This dataframe is"
+                           "now ready for mode sampling.")
         return trips
 

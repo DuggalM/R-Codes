@@ -2,6 +2,25 @@ import pandas as pd
 import os
 from collections import OrderedDict
 import json
+import logging
+import control_parameters
+
+def setupLogger(model_name):
+    # remove pre existing log
+    if os.path.exists(os.path.join(control_parameters.dirListing, control_parameters.logname)):
+        os.remove(os.path.join(control_parameters.dirListing, control_parameters.logname))
+
+    logger = logging.getLogger(model_name)
+    logger.setLevel(logging.INFO)
+    fh = logging.FileHandler(os.path.join(control_parameters.dirListing, control_parameters.logname))
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(funcName)s - %(levelname)s - %(message)s"))
+    logger.addHandler(fh)
+
+    return logger
+
+logger = setupLogger("Matrix Discretization")
+
 
 # function to concatenate two dfs
 def concat_df(df1, df2, num):
@@ -16,6 +35,8 @@ def concat_df(df1, df2, num):
     # once sampled, now concatenate the information back to the household dataframe
     df1.reset_index(drop=True, inplace=True)
     df2.reset_index(drop=True, inplace=True)
+    df1 = df1.loc[:,~df1.columns.duplicated()]
+    df2 = df2.loc[:,~df2.columns.duplicated()]
     df1 = pd.concat([df1, df2], axis=num)
 
     return df1
@@ -31,12 +52,12 @@ def market_segment(df):
     """
     if {'hhinc', 'auto_suff'}.issubset(df.columns):
         # create segments
-        df.loc[(df['hhinc'] <= 60000) & (df['auto_suff'] == 0), 'market_seg'] = 0
-        df.loc[(df['hhinc'] > 60000) & (df['auto_suff'] == 0), 'market_seg'] = 1
-        df.loc[(df['hhinc'] <= 60000) & (df['auto_suff'] == 1), 'market_seg'] = 2
-        df.loc[(df['hhinc'] > 60000) & (df['auto_suff'] == 1), 'market_seg'] = 3
-        df.loc[(df['hhinc'] <= 60000) & (df['auto_suff'] == 2), 'market_seg'] = 4
-        df.loc[(df['hhinc'] > 60000) & (df['auto_suff'] == 2), 'market_seg'] = 5
+        df.loc[(df['hhinc'] <= 60000) & (df['auto_suff'] == 0), 'market_seg'] = 1
+        df.loc[(df['hhinc'] > 60000) & (df['auto_suff'] == 0), 'market_seg'] = 2
+        df.loc[(df['hhinc'] <= 60000) & (df['auto_suff'] == 1), 'market_seg'] = 3
+        df.loc[(df['hhinc'] > 60000) & (df['auto_suff'] == 1), 'market_seg'] = 4
+        df.loc[(df['hhinc'] <= 60000) & (df['auto_suff'] == 2), 'market_seg'] = 5
+        df.loc[(df['hhinc'] > 60000) & (df['auto_suff'] == 2), 'market_seg'] = 6
         # set dtype
         df['market_seg'] = df['market_seg'].astype('int8')
     else:
@@ -70,6 +91,7 @@ def file_existence(filepath, filename):
 
     """
     This function checks if a file exists for a given user directory
+    :rtype: object
     :param: filepath: directory in which the user has saved all the requisite files noted in control_parameters.py
     :param: filename: filename that needs to be checked for its presence
     :return: boolean
