@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Nov 30 18:07:02 2017
+
+@author: MZD
+"""
+
 # This file contains all the user defined controls like directory listing, filelists, binary lists etc.
 # All modifications to customize a run should be made here.
 ########################################################################################################################

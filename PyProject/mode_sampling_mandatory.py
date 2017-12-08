@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Nov 30 18:07:02 2017
+
+@author: MZD
+"""
+
 # Import packages
 import pandas as pd
 import numpy as np
@@ -299,7 +306,22 @@ class MandatoryModeSampling(object):
         common.logger.info("Batch in the DTYPE definitions")
         dataFrameDtype = common.dtype_defintions(control_parameters.dirListing,
                                                       EarlyValidFiles.getJSONFileList())
+
         hbw_trip_bin, hbw_stn_bin, hbw_egg_bin = self._getPeak_OffPeakFile(peak_offpeak, purpose)
+
+        # # check to see if appropriate columns exist
+        # temp_df = pd.concat(hbw_trip_bin, ignore_index=True)
+        # if 'Market Segment' not in temp_df:
+        #     exit(0)
+        #     common.logger.exception(
+        #             "There is no Market Segment column in the elemental mode probabilities binary file"
+        #             "The program requires it.")
+        # else:
+        #      common.logger.exception(
+        #             "The requisite market segment column in there in the dataframe.")
+
+
+
         # dictionary of dfs to collect chunk df
 
         hbw_mode_allchunks = {}
