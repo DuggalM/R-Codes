@@ -11,7 +11,8 @@ import logging
 
 #%% Set the directory structure and other user controls
 dirListing_abm = 'c:\\personal\\IMM\\'
-dirListing_trips = 'c:\\pesonal\\'
+dirListing_peaktrips = 'c:\\personal\\IMM\\Other Trips\\peak'
+dirListing_offpeaktrips = 'c:\\personal\\IMM\\Other Trips\\offpeak'
 
 # set random seed to be used
 seed = 12345
@@ -39,10 +40,16 @@ logger = setupLogger("MLOGIT PROBE")
 # from the GGHM run.
 
 class EarlyValidFiles_MlogitProbe(object):
+    ####################### CSV ############################
     HOUSE_HOLDS_OUT = 'households_out.csv'
     TRIPS_OUT      = 'trips_out.csv'
-    GGH_EQUIV            = 'GGH_zones.csv'
-    
+    GGH_EQUIV      = 'GGH_zones.csv'
+
+    ####################### JSON ###########################
+    DTYPE_HOUSEHOLDS = 'dtype_households.json'
+    DTYPE_TRIPS      = 'dtype_trips.json'
+
+    ####################### PEAK ############################
     HBM_PEAK_MSEG1 = 'trips_peak_all_modes_hbm_nocar_low.bin'
     HBM_PEAK_MSEG2 = 'trips_peak_all_modes_hbm_nocar_high.bin'
     HBM_PEAK_MSEG3 = 'trips_peak_all_modes_hbm_insuff_low.bin'
@@ -64,10 +71,33 @@ class EarlyValidFiles_MlogitProbe(object):
     WBO_PEAK_MSEG5 = 'trips_peak_all_modes_wbo_suff_low.bin'
     WBO_PEAK_MSEG6 = 'trips_peak_all_modes_wbo_suff_high.bin'
     
-    NHB_PEAK       = 'trips_peak_all_modes_nhb_all_segments.bin'
+    NHB       = 'trips_peak_all_modes_nhb_all_segments.bin'
+
+    ###################### OFF-PEAK ##########################
+    HBM_OFFPEAK_MSEG1 = 'trips_offpeak_all_modes_hbm_nocar_low.bin'
+    HBM_PEAK_MSEG2 = 'trips_peak_all_modes_hbm_nocar_high.bin'
+    HBM_PEAK_MSEG3 = 'trips_peak_all_modes_hbm_insuff_low.bin'
+    HBM_PEAK_MSEG4 = 'trips_peak_all_modes_hbm_insuff_high.bin'
+    HBM_PEAK_MSEG5 = 'trips_peak_all_modes_hbm_suff_low.bin'
+    HBM_PEAK_MSEG6 = 'trips_peak_all_modes_hbm_suff_high.bin'
+
+    HBO_PEAK_MSEG1 = 'trips_peak_all_modes_hbo_nocar_low.bin'
+    HBO_PEAK_MSEG2 = 'trips_peak_all_modes_hbo_nocar_high.bin'
+    HBO_PEAK_MSEG3 = 'trips_peak_all_modes_hbo_insuff_low.bin'
+    HBO_PEAK_MSEG4 = 'trips_peak_all_modes_hbo_insuff_high.bin'
+    HBO_PEAK_MSEG5 = 'trips_peak_all_modes_hbo_suff_low.bin'
+    HBO_PEAK_MSEG6 = 'trips_peak_all_modes_hbo_suff_high.bin'
+
+    WBO_PEAK_MSEG1 = 'trips_peak_all_modes_wbo_nocar_low.bin'
+    WBO_PEAK_MSEG2 = 'trips_peak_all_modes_wbo_nocar_high.bin'
+    WBO_PEAK_MSEG3 = 'trips_peak_all_modes_wbo_insuff_low.bin'
+    WBO_PEAK_MSEG4 = 'trips_peak_all_modes_wbo_insuff_high.bin'
+    WBO_PEAK_MSEG5 = 'trips_peak_all_modes_wbo_suff_low.bin'
+    WBO_PEAK_MSEG6 = 'trips_peak_all_modes_wbo_suff_high.bin'
+
+    NHB = 'trips_peak_all_modes_nhb_all_segments.bin'
     
-    DTYPE_HOUSEHOLDS = 'dtype_households.json'
-    DTYPE_TRIPS      = 'dtype_trips.json'
+
 
     @classmethod
     def getBINFileList(cls):

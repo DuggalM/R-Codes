@@ -6,19 +6,24 @@ Created on Thu Dec  7 18:07:02 2017
 """
 
 import control_parameters
-from Mlogit_Probe import MandatoryOd
+from Mlogit_Probe_Mandatory import MandatoryFortranOd
 import Mlogit_Probe_EarlyValid as mprobe_valid
 import logging
 
 
 def main():
+    """
+
+
+
+    """
     mprobe_valid.logger.info("Processing Start")
     seed = control_parameters.seed
 
     mprobe_valid.logger.info("Run Mlogit_Probe for the mandatory trip purposes")
     mand_purposes = ['HBW', 'HBS', 'HBU']
     education = ['HBS', 'HBU']
-    mand_prob_pairs = MandatoryOd(seed).run(mand_purposes, education)
+    mand_prob_pairs = MandatoryFortranOd(seed, 0).run(mand_purposes, education)
 
 
 

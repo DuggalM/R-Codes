@@ -16,6 +16,8 @@ import os
 import logging
 
 # logger = logging.getLogger("super_model")
+#TODO the return mode of the mandatory tour purpose should be the same as the outgoing mode sampled. This will also
+#TODO require swtiching the egress and access modes
 
 class MandatoryModeSampling(object):
 
@@ -309,20 +311,7 @@ class MandatoryModeSampling(object):
 
         hbw_trip_bin, hbw_stn_bin, hbw_egg_bin = self._getPeak_OffPeakFile(peak_offpeak, purpose)
 
-        # # check to see if appropriate columns exist
-        # temp_df = pd.concat(hbw_trip_bin, ignore_index=True)
-        # if 'Market Segment' not in temp_df:
-        #     exit(0)
-        #     common.logger.exception(
-        #             "There is no Market Segment column in the elemental mode probabilities binary file"
-        #             "The program requires it.")
-        # else:
-        #      common.logger.exception(
-        #             "The requisite market segment column in there in the dataframe.")
-
-
-
-        # dictionary of dfs to collect chunk df
+                # dictionary of dfs to collect chunk df
 
         hbw_mode_allchunks = {}
 
