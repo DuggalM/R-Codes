@@ -1,0 +1,80 @@
+---
+title: "Friction Factor Form"
+author: "Mausam Duggal"
+date: "November 24th, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r init, echo=FALSE, message=FALSE, warnings = FALSE, include=FALSE}
+library(dplyr); library(MASS); library(ggplot2); library(fitdistrplus)
+wd <- setwd("c:/personal")
+
+```
+
+
+## **Batch in WBO Data**
+
+```{r}
+# read in the HBM data that was in Peter's spreadsheet
+hbm <- read.csv("c:/personal/HBM_dist.csv", stringsAsFactors = FALSE)
+
+# plot the count distribution
+p1 <- ggplot(hbm, aes(x=Dist, y = Freq)) + geom_bar(stat = "identity") + ggtitle("Peter's Raw Table - WBO")
+p1
+
+```
+
+## *Generate Distributions*  
+
+Count data generally is not very conducive to evaluating different types of distributions other than negative bionomial, poisson etc. But, it is also possible to expand the dataset as the intervals are very thin and one can make an assumption about the distribution of distances within each interval. Below, a uniform assumption is made for each distance bin, but can very much be changed to represent one that the user thinks should be used.
+
+
+```{r}
+# expand the data to get rid of counts and make it continuous. Given how tight each interval is it is safe to assume a uniform random distribution for each interval and sample to build the expanded df
+expand_df <- list()
+
+hbm$min <- hbm$Dist - 1
+hbm$max <- hbm$Dist + 1
+
+# list with randomly gen numbers that corresspond to the interval of minutes
+l <- with(hbm, Map(runif, Freq, min, max))
+l_df <- do.call(rbind, lapply(l, data.frame, stringsAsFactors=FALSE))
+colnames(l_df) <- c("dist")
+
+# the distribution looks reasonably close to the count distribution. Thus, uniform can work. 
+p <- ggplot(l_df, aes(x=dist)) + geom_histogram(binwidth = 2) + ggtitle("Distribution of Expanded Dataset")
+p
+
+```
+### **Generate a Weibull**  
+
+A number of distributions could be evaluated, but i just ran *Weibull* for time and the fact that it is a widely understood distribution. One could also use *Lognormal*, however that implies normality in the variable, which needs to be tested. Finally, gamma has been used in the past for friction factor curves, but the 3-parameter *Gamma*. This is a tough one to estimate although some packages do it and further the third parameter (location) although very useful for influencing the mean of the TLFD can possibly be achieved with a 2-parameter Weibull. Finally, if we were to actually use such a friction factor then it is worth pursuing the estimation of such a 3-parameter Weibull or Gamma, but not for this exercise.  
+
+Now estimate a best fit Weibull. I have set the lower bound to 0.01 for both parameters to avoid NaNs and overflow. Although, R will yet estimate without a lower bound specified, but I don't want it to evaluate a negative region as that will surely be an issue.
+
+```{r}
+# fix Weibull.
+f<-fitdist(l_df$dist, 'weibull', lower = c(0.01, 0.01))
+
+# print the summaries and also plot the statistics
+print(summary(f))
+plot(f)
+
+# sample from a weibull and plot it
+z1<-as.data.frame(rweibull(200000, shape = f$estimate[1], scale = f$estimate[2]))
+colnames(z1) <- c("dist")
+ggplot(z1, aes(dist)) + geom_histogram(bins=48) +scale_x_discrete(labels=hbm$Minutes) + ggtitle("Distribution of Fitted Weibull")
+
+# One can calibrate the shape and scale to get it to fix better.
+
+```
+
+The Q-Q plot could look better, but ther are many simplifying assumptions I have made. A more serious effort would result in a more standard Q-Q, probably.  
+
+The plot above shows that a fitted Weibull does a good job. Incorporating that in the model is also quite straightforward as one needs to only add in the PDF using the shape and scale parameters. So for example, the current compound distance formulation of the V4 will be replaced by a Weibull PDF with X serving as the distance variable. The other size terms will come in as is and get adjusted as part of calibration using shadow price.  
+
