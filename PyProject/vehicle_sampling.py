@@ -10,8 +10,6 @@ Created on Thu Nov 30 18:07:02 2017
 import pandas as pd
 import os
 import os.path
-import json
-from collections import OrderedDict
 import control_parameters
 from balsa.cheval import sample_from_weights
 from control_parameters import EarlyValidFiles
@@ -23,13 +21,14 @@ class VehicleSampling(object):
     This class is used to assign a vehicle (trad auto, av auto, trad uber, auto uber) to each household in the GGHM.
 
     The sequence of the code is defined as follows:
+
     step 0: early validation - this ensures that all the files needed for vehicle sampling are available in the user
             defined directory listing. These files are noted by the user in the early_valid_filelist.
     step 1: binary file validation - here we make sure that the number of binary files in the directory match the
             number of chunks noted in the control_parameters file. This is important as it ensures that MLOGIT
             sliced the probability dataframe into the requisite number of chunks.
-    step 2: function that assigns a vehicle type to each household
-    step 3: the run function that takes in the data that the model operates on carries out vehicle sampling
+    step 2: function that assigns a vehicle type to each household.
+    step 3: the run function that takes in the data that the model operates on carries out vehicle sampling.
 
 
     """
@@ -50,7 +49,7 @@ class VehicleSampling(object):
         self.dataFrameDtype = common.dtype_defintions(control_parameters.dirListing,
                                                   EarlyValidFiles.getJSONFileList())
 
-
+    #TODO move the validation to another class maybe
     def validation(self):
         """
 
@@ -139,12 +138,12 @@ class VehicleSampling(object):
         veh_type['mseg'] = veh_type['mseg1'] + '_' + veh_type['mseg2']
 
         # add in integer based market segment category
-        veh_type.loc[(veh_type['mseg'] == 'nocar_low'), 'market_seg'] = 1
-        veh_type.loc[(veh_type['mseg'] == 'nocar_high'), 'market_seg'] = 2
-        veh_type.loc[(veh_type['mseg'] == 'insuff_low'), 'market_seg'] = 3
-        veh_type.loc[(veh_type['mseg'] == 'insuff_high'), 'market_seg'] = 4
-        veh_type.loc[(veh_type['mseg'] == 'suff_low'), 'market_seg'] = 5
-        veh_type.loc[(veh_type['mseg'] == 'suff_high'), 'market_seg'] = 6
+        veh_type.loc[(veh_type['mseg'] == 'nocar_low'), 'market_seg'] = 0
+        veh_type.loc[(veh_type['mseg'] == 'nocar_high'), 'market_seg'] = 1
+        veh_type.loc[(veh_type['mseg'] == 'insuff_low'), 'market_seg'] = 2
+        veh_type.loc[(veh_type['mseg'] == 'insuff_high'), 'market_seg'] = 3
+        veh_type.loc[(veh_type['mseg'] == 'suff_low'), 'market_seg'] = 4
+        veh_type.loc[(veh_type['mseg'] == 'suff_high'), 'market_seg'] = 5
         veh_type['market_seg'] = veh_type['market_seg'].astype('int8')
 
         # extract the vehicle type and drop unncessary columns
@@ -160,6 +159,9 @@ class VehicleSampling(object):
         # invoke the class and run the vehicle sampling method.
         common.logger.info("Add vehicle type to every household")
         hh = self.assign_vehtype(hh, veh_type, self.seed)
+
+        # only keep the hhid and veh_type column
+        hh = hh[['hhid', 'hh_veh_type']]
 
         # dictionary of market and vehicle segment key and values
         market_seg_def = {

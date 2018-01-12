@@ -13,6 +13,8 @@ dirListing = 'c:\\personal\\IMM\\'
 
 # set random seed to be used
 seed = 12345
+prng = 3
+chaos_monkey = 0.1
 logname = "discretization.log"
 
 # set chunk parameter. This should be the same as in MLogit for outputting probabilities and equals the number of
@@ -26,7 +28,7 @@ chunk = 1
 
 class EarlyValidFiles(object):
     HOUSE_HOLDS_OUT = 'households_out.csv'
-    TRIPS_OUT = 'trips_out.csv'
+    TRIPS_OUT = 'foo_nonmand.csv'
     SAMPLE_VEH_PROPS = 'sample_veh_proportions_gghm_zone_csd.csv'
     DTYPE_ELEMENTAL_PROB = 'dtype_primarymode_prob.json'
     DTYPE_STATION_CHOICE = 'dtype_stationchoice.json'
@@ -49,9 +51,8 @@ class EarlyValidFiles(object):
 ########################################################################################################################
 # BINARY PROBABILITIES
 # Bill's binary probability and access/egress station ids split into chunks. There must be:
-# 7 (trip purposes) X 3 (primary mode elemental probabilities) X 2 (time periods) X 10 (chunks) = 420 files.
-# If the user changes the number of chunks option in MLOGIT than the appropriate file names need to be added in the list
-# below.
+# 7 (trip purposes) X 3 (elemental probabilities, station choice, egress mode probabilities) X 2 (time periods) X
+# 10 (chunks) = 420 files.
 
 # TODO-mausam add in the remaining trip purposes as well
 

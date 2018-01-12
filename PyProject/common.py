@@ -34,9 +34,9 @@ def concat_df(df1, df2, num):
 
     """
     A function to concatenate two dataframes by columns
-    :param dataframe 1
-    :param dataframe 2
-    :param axis i.e 0 for row and 1 for column
+    :param df1: dataframe 1
+    :param df2: dataframe 2
+    :param num: 0 for row and 1 for column
     :return concatenated df
     """
     # once sampled, now concatenate the information back to the household dataframe
@@ -59,12 +59,12 @@ def market_segment(df):
     """
     if {'hhinc', 'auto_suff'}.issubset(df.columns):
         # create segments
-        df.loc[(df['hhinc'] <= 60000) & (df['auto_suff'] == 0), 'market_seg'] = 1
-        df.loc[(df['hhinc'] > 60000) & (df['auto_suff'] == 0), 'market_seg'] = 2
-        df.loc[(df['hhinc'] <= 60000) & (df['auto_suff'] == 1), 'market_seg'] = 3
-        df.loc[(df['hhinc'] > 60000) & (df['auto_suff'] == 1), 'market_seg'] = 4
-        df.loc[(df['hhinc'] <= 60000) & (df['auto_suff'] == 2), 'market_seg'] = 5
-        df.loc[(df['hhinc'] > 60000) & (df['auto_suff'] == 2), 'market_seg'] = 6
+        df.loc[(df['hhinc'] <= 60000) & (df['auto_suff'] == 0), 'market_seg'] = 0
+        df.loc[(df['hhinc'] > 60000) & (df['auto_suff'] == 0), 'market_seg'] = 1
+        df.loc[(df['hhinc'] <= 60000) & (df['auto_suff'] == 1), 'market_seg'] = 2
+        df.loc[(df['hhinc'] > 60000) & (df['auto_suff'] == 1), 'market_seg'] = 3
+        df.loc[(df['hhinc'] <= 60000) & (df['auto_suff'] == 2), 'market_seg'] = 4
+        df.loc[(df['hhinc'] > 60000) & (df['auto_suff'] == 2), 'market_seg'] = 5
         # set dtype
         df['market_seg'] = df['market_seg'].astype('int8')
     else:
