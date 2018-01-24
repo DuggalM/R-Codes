@@ -20,11 +20,11 @@ class NonMandatoryFortranOd(object):
     
     """
     
-    def __init__(self, prng, exploration_thold):
+    def __init__(self, prng, chaos_monkey):
 
         # set random state
         self.prng = prng
-        self.exploration_thold = exploration_thold
+        self.chaos_monkey = chaos_monkey
 
         pass
 
@@ -103,7 +103,7 @@ class NonMandatoryFortranOd(object):
 
         return df1
 
-    def sample_destination(self, current_row, all_othertrips, exploration_thold):
+    def sample_destination(self, current_row, all_othertrips, chaos_monkey):
         """
         This function samples a destination for a given origin based on the trip purpose and market segment chosen.
 
@@ -141,18 +141,19 @@ class NonMandatoryFortranOd(object):
         # destination zones. This will avoid a clustering of trips to a destination.
         exploration_coeff = np.random.uniform(0,1,1)
 
-        if exploration_coeff > exploration_thold:
-            mprobe_valid.logger.info("Destination sampled using trips as a weight")
+        if exploration_coeff > chaos_monkey:
 
             # sample for a destination
             sampled_dest = t1_loc.sample(n= 1, weights= t1['wholetrips'], replace=True, random_state= self.prng)
+            # mprobe_valid.logger.info("Destination %s sampled using trips as a weight" %sampled_dest)
 
             return sampled_dest.iat[0, 1]
 
         else:
-            mprobe_valid.logger.info("Destination sampled with equal probability")
+
             # sample for a destination
             sampled_dest = t1_loc.sample(n= 1, replace=True, random_state= self.prng)
+            # mprobe_valid.logger.info("Destination %s sampled with equal probability" %sampled_dest)
 
             return sampled_dest.iat[0, 1]
 
@@ -200,7 +201,7 @@ class NonMandatoryFortranOd(object):
             if (trips_hhold_array[row][7] > 0) & (trips_hhold_array[row][8] == 0):
                 # get the zone by sampling from the requisite trip purpose, time period and market segment
                 # and assign as the destination
-                new_taz_j = self.sample_destination(trips_hhold_array[row], all_other, self.exploration_thold)
+                new_taz_j = self.sample_destination(trips_hhold_array[row], all_other, self.chaos_monkey)
                 trips_hhold_array[row][8] = new_taz_j
 
             # this is the next condition the destination is known but not the origin
@@ -215,7 +216,7 @@ class NonMandatoryFortranOd(object):
                 trips_hhold_array[row][7] = new_taz_j
                 test_current = trips_hhold_array[row]
 
-                new_taz_j = self.sample_destination(test_current, all_other,self.exploration_thold)
+                new_taz_j = self.sample_destination(test_current, all_other,self.chaos_monkey)
                 trips_hhold_array[row][8] = new_taz_j
 
         return trips_hhold_array
@@ -280,39 +281,39 @@ class NonMandatoryFortranOd(object):
             mprobe_valid.logger.info("Destination solver finished successfully")
 
 
-        # # now batch out the necessary matrices
-        # mprobe_valid.logger.info("Start saving the matrices in the format desired by Mlogit")
-        # for purpose in nonmandatory_purposes:
-        #
-        #     nonmand_only = trips_hhold.iloc[np.where(trips_hhold['purpose'].values == purpose)]
-        #
-        #     # now loop over the peak periods
-        #     for peak in range(0, 2):
-        #
-        #         timeperiod_df = nonmand_only.loc[nonmand_only['peak_flag'] == peak]
-        #         timeperiod_df = timeperiod_df.groupby(['taz_i', 'taz_j', 'purpose', 'market_seg']).size().reset_index(
-        #             name='freq')
-        #
-        #         # now loop over the segments
-        #         for segment in timeperiod_df['market_seg'].unique():
-        #             # create filename and then groupby
-        #             # only keep relevant cols and set a flag
-        #             # Merge the ggh zones and the trip list and convert to wide format
-        #
-        #             fname = purpose + "_" + str(segment)
-        #             df_hbw = timeperiod_df.loc[timeperiod_df['market_seg'] == segment]
-        #             df_hbw = df_hbw[['taz_i', 'taz_j']]
-        #             df_hbw['probflag'] = 1
-        #
-        #             # Make square dataframe for Fortran
-        #             df_hbw1 = pd.merge(self.ggh2, df_hbw, how="left", left_on=['ggh_zone_x', 'ggh_zone_y'],
-        #                                right_on=['taz_i', 'taz_j'])
-        #             df_hbw2 = df_hbw1.pivot_table(index='ggh_zone_x', columns='ggh_zone_y', values='probflag',
-        #                                           fill_value=0)
-        #
-        #             to_fortran(df_hbw2, os.path.join(mprobe_valid.dirListing_abm, fname + ' peak_flag ' + str(peak) + '.bin'),
-        #                        n_columns=4000)
-        #             mprobe_valid.logger.info("All matrices saved.")
+        # now batch out the necessary matrices
+        mprobe_valid.logger.info("Start saving the matrices in the format desired by Mlogit")
+        for purpose in nonmandatory_purposes:
+
+            nonmand_only = trips_hhold.iloc[np.where(trips_hhold['purpose'].values == purpose)]
+
+            # now loop over the peak periods
+            for peak in range(0, 2):
+
+                timeperiod_df = nonmand_only.loc[nonmand_only['peak_flag'] == peak]
+                timeperiod_df = timeperiod_df.groupby(['taz_i', 'taz_j', 'purpose', 'market_seg']).size().reset_index(
+                    name='freq')
+
+                # now loop over the segments
+                for segment in timeperiod_df['market_seg'].unique():
+                    # create filename and then groupby
+                    # only keep relevant cols and set a flag
+                    # Merge the ggh zones and the trip list and convert to wide format
+
+                    fname = purpose + "_" + str(segment)
+                    df_hbw = timeperiod_df.loc[timeperiod_df['market_seg'] == segment]
+                    df_hbw = df_hbw[['taz_i', 'taz_j']]
+                    df_hbw['probflag'] = 1
+
+                    # Make square dataframe for Fortran
+                    df_hbw1 = pd.merge(self.ggh2, df_hbw, how="left", left_on=['ggh_zone_x', 'ggh_zone_y'],
+                                       right_on=['taz_i', 'taz_j'])
+                    df_hbw2 = df_hbw1.pivot_table(index='ggh_zone_x', columns='ggh_zone_y', values='probflag',
+                                                  fill_value=0)
+
+                    to_fortran(df_hbw2, os.path.join(mprobe_valid.dirListing_abm, fname + ' peak_flag ' + str(peak) + '.bin'),
+                               n_columns=4000)
+                    mprobe_valid.logger.info("All matrices saved.")
         return trips_hhold
 
 

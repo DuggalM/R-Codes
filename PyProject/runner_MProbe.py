@@ -11,6 +11,7 @@ import Mlogit_Probe_EarlyValid as mprobe_valid
 from trips_hhold_mixer import TripsHhold
 from peak_offpeak import PeakOffpeak
 from Mlogit_Probe_NonMandatory import NonMandatoryFortranOd
+import os
 
 
 def main():
@@ -26,13 +27,13 @@ def main():
     mprobe_valid.logger.info("Get see from the control_parameters file")
     seed = control_parameters.seed
     prng = control_parameters.prng
-    exploration_thold = control_parameters.chaos_monkey
+    chaos_monkey = control_parameters.chaos_monkey
 
     ####################################################################################################################
     # run the trips_hhold mixer and also tag each record with the peakoffpeak flag
     mprobe_valid.logger.info("Run the trips_hhold mixer and create the peak_offpeak flags")
     trips_hhold = TripsHhold().mixer_run()
-    trips_hhold = PeakOffpeak().run(trips_hhold, 0)
+    trips_hhold = PeakOffpeak().run(trips_hhold, 1)
 
     ####################################################################################################################
     # mprobe_valid.logger.info("Run Mlogit_Probe for the mandatory trip purposes")
@@ -45,11 +46,10 @@ def main():
     nonmandatory_purposes = ['HBO', 'HBM', 'WBO', 'NHB', 'HBE']
 
     # TODO remove the first line below for a full operational model
-    trips_hhold = trips_hhold.loc[(trips_hhold['hhid'] > 0) & (trips_hhold['hhid'] < 10000)]
-    nonmand_prob_pairs = NonMandatoryFortranOd(prng, exploration_thold).run(trips_hhold, nonmandatory_purposes)
-    nonmand_prob_pairs.to_csv(r'c:/personal/imm/foo_nonmand.csv', index = False)
 
-
+    trips_hhold = trips_hhold.loc[(trips_hhold['hhid'] > 0) & (trips_hhold['hhid'] <= 1000)]
+    nonmand_prob_pairs = NonMandatoryFortranOd(prng, chaos_monkey).run(trips_hhold, nonmandatory_purposes)
+    nonmand_prob_pairs.to_csv(os.path.join(r'c:/personal/imm/' + os.path.basename("foo_nonmand" + str(1)) + ".csv"), index = False)
 
 
     mprobe_valid.logger.info("Processing Ended")
