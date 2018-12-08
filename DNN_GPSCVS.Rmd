@@ -1,0 +1,739 @@
+---
+title: "DNN"
+date: "Nov 14, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r, echo=FALSE}
+
+library(tidyverse)
+library(data.table)
+library(sf)
+library(spatialEco)
+library(rgdal)
+library(rgeos)
+library(reshape2)
+library(tictoc)
+library(foreach)
+
+library(h2o)   # deep learning
+library(xgboost)
+library(parallelMap)  # speed up ML tuning
+library(caret)
+library(smotefamily)
+library(FNN) # to run k nearest for SMOTE FAMILT
+library(gtools) # for combinations
+
+#' Set working directory
+
+wd <- setwd("c:/projects/province-wide/GPS/DNN")
+
+```
+
+## PITNEY BOWES
+
+```{r, Batch in the Pitney Bowes shapefile, echo=FALSE}
+
+pb_shp<-readOGR("c:/projects/province-wide","FirmSynthesisPoints_QTAssigned_LCC")
+rgeos::gIsValid(pb_shp)
+
+#get the database
+pb_shp_df <- pb_shp@data
+
+```
+
+# CVS and Data Munging
+
+```{r, Batch in the CVS}
+options(digits = 8)
+
+# batch in csd identifier. The idea is that if one is within the GGH or Trans the buffer and variance will be lower.
+csd_equiv <- read_csv("c:/projects/province-wide/GPS/DNN/CSD_GGH.txt") %>%
+  .[,-c(1)]
+
+# Batch in the CVS data that Bryce has sent along and strip out unncessary columns
+cvs <- read_csv("c:/projects/province-wide/GPS/DNN/cvs_tours_5.csv.gz") %>%
+  merge(., csd_equiv, by = "csduid", all.x = TRUE)
+cvs$GGH[is.na(cvs$GGH)] <- 0
+
+# get the points from the CVS dataframe
+xy <- cvs %>%
+  subset(., select = c(latitude, longitude)) %>%
+  transform(ID = 1:nrow(.))
+colnames(xy) <- c("Y", "X", "ID")
+coordinates(xy) <- c("X", "Y") 
+
+xydf <- xy@coords
+
+# set the projection system
+proj4string(xy) <- CRS("+init=epsg:4326")
+
+# Get the projection system from the Pitney Bowes points file and set the CVS to the same
+pb_proj <- pb_shp@proj4string
+res <- as.data.frame(spTransform(xy, pb_proj)) %>%
+  subset(., select = -c(ID))
+
+# Now convert the CVS to a spatial points dataframe
+cvs <- cbind(cvs, res)
+cvs_spdf <- SpatialPointsDataFrame(coords = res, data = cvs, proj4string = pb_proj)
+cvs_spdf@data$seq_id <- 1:nrow(cvs_spdf@data)
+
+# xtabs(~sctg2+cvs_comm_group, data=cvs)
+
+```
+
+
+
+```{r}
+
+cvs_df <- cvs_spdf@data
+
+# multiple buffer sizes
+buff_size_urban <- 250
+buff_size_rural <- 750
+variance <- -2
+
+# create all buffers at once by urban vs rural
+cvs_spdf_urban <- cvs_spdf[cvs_spdf@data$GGH >0, ]
+bufferedPoints_urb <- gBuffer(cvs_spdf_urban, width=buff_size_urban, byid=TRUE)
+
+cvs_spdf_rural <- cvs_spdf[cvs_spdf@data$GGH ==0, ]
+bufferedPoints_rur <- gBuffer(cvs_spdf_rural, width=buff_size_rural, byid=TRUE)
+
+# one parent buffer dataframe
+bufferedPoints <- rbind(bufferedPoints_urb, bufferedPoints_rur, makeUniqueIDs = TRUE) 
+
+# Calculate the Gaussian Distance now
+datalist = list()
+tic("Build Gaussian Distances")
+
+#setup parallel backend to use many processors
+cores=detectCores()
+cl <- makeCluster(cores[1]-1) #not to overload your computer
+registerDoParallel(cl)
+
+
+datalist <- foreach(i = 1:nrow(cvs_df), .packages=c("sp", "dplyr", "reshape2")) %dopar% {
+  
+  # select the buffer polygon around the CVS
+  first <- bufferedPoints[bufferedPoints@data$seq_id == i, ]
+
+  # get the dataframe of the buffer
+  firstdf <- first@data 
+  
+  # Get all the Pitney Bowes firms inside the buffer
+  pb_in_poly <- pb_shp[first,]
+
+  # only if some firms were found in the buffer
+  if(nrow(pb_in_poly@data)>0){
+    
+    # save the Pitney Bowes firms inside the buffer
+    pb_in_poly_df <- pb_in_poly@data %>%
+      merge(., pb_shp_df, by = "firm_id", all.x = TRUE) %>%
+      subset(., select = c(firm_id, csd_id.x, naics_code.x, size_categ.x, lat.y, lon.y ))
+    colnames(pb_in_poly_df) <- c("firm_id", "csd_id", "naics_code", "size", "lat", "lon")
+    
+    first_df <- bind_rows(replicate(nrow(pb_in_poly_df), firstdf, simplify = FALSE)) %>%
+      cbind(., pb_in_poly_df)
+
+    # Gaussian distance and percentage calculation
+    first_df$euc <- sqrt(((first_df$X-first_df$lon)/10000)^2 + ((first_df$Y-first_df$lat)/10000)^2)   # scale down by 10000 to avoid overflow
+    first_df$var <- variance*first_df$euc
+    first_df$gauss_dist <- exp(first_df$var)
+    first_df$pct <- first_df$gauss_dist/sum(first_df$gauss_dist)
+    
+    # calculate probabilities by NAICS
+    naics_pct <- first_df %>%
+      group_by(naics_code) %>%
+      summarise(naics_wt = sum(pct)) %>%
+      transform(., id = first_df$ID[1]) %>%
+      dcast(.,id ~ naics_code, value.var = "naics_wt") %>%
+      subset(., select = -c(id))
+    
+    # Bind it all together
+    firstdf <- cbind(firstdf, naics_pct)
+    
+    datalist[[i]] <- firstdf
+    
+  } else {
+    
+    datalist[[i]] <- firstdf
+    
+  }
+
+
+}
+
+stopCluster(cl)
+toc()
+
+# One dataframe of all Buffers and the gaussian distances. Get rid of NAs
+big_data = rbindlist(datalist, fill = TRUE)
+big_data[is.na(big_data)] <- 0
+
+```
+
+## Build the DNN dataset
+```{r, Now build the DNN dataset}
+
+dnn_df <- big_data %>%
+  group_by(ID) %>%
+  summarise(nw = min(nw), cvs_comm_group = min(cvs_comm_group), 
+            sctg2 = min(sctg2),
+            tour_dist = min(tour_dist), csduid = min(csduid), 
+            n11 =  mean(`11`),n23 =  mean(`23`), n31 =  mean(`31-33`), 
+            n44 =  mean(`44-45`),n48 =  mean(`48-49`),n52 =  mean(`52`),
+            n53 =  mean(`53`), n54 =  mean(`54`),n56 =  mean(`56`),
+            n62 =  mean(`62`),n71 =  mean(`71`),n72 =  mean(`72`),
+            n81 =  mean(`81`),n22 =  mean(`22`),n41 =  mean(`41-42`),
+            n51 =  mean(`51`),n61 =  mean(`61`),n21 =  mean(`21`),
+            n55 =  mean(`55`),n91 =  mean(`91-92`), urban_area = max(GGH))
+
+# Save this interim step
+write_csv(dnn_df, "c:/projects/province-wide/GPS/DNN/dnn_df_buffer_urban0.5_rural1.csv")
+
+dnn_df <- read_csv("c:/projects/province-wide/GPS/DNN/dnn_df_buffer_urban0.5_rural1.csv")
+
+```
+
+
+
+# Level 1 DNN NOW  
+
+## Do Something about the *Semi-Known : Unknowns*  
+
+There are around 12042 observations that had **unknown** as a commodity. Ignoring this in a tour-based setup is a challenge for it reduces the dataset by 25%.  
+
+We can drop these from the final training, but I need to impute a label for two reasons:  
+
+* First, augment the training dataset  
+* Use it in the testing dataset and compare results against the imputation.  
+
+
+```{r, Understand the Unknowns}
+
+# Let's see how the Unknowns are distributed by distance band
+# generate breaks up to 3000 kms. Beyond that it is a single group
+dist_breaks <- seq(0, 1500, by = 100) 
+bin_kns <- subset(dnn_df, cvs_comm_group != 99) %>%
+  transform(., km_bin = ifelse(.$tour_dist <= 1500, cut(.$tour_dist, breaks = dist_breaks), 16)) %>% 
+              group_by(km_bin) %>% 
+              summarise(bin_cnt = n()) %>%
+              transform(., cumulative = cumsum(.$bin_cnt/sum(.$bin_cnt)))
+
+ggplot(bin_kns, aes(x=km_bin, y=bin_cnt)) + 
+  geom_bar(stat = "identity") +
+  theme(axis.text.x=element_text(angle=90,hjust=1))
+
+
+```
+
+Let's make representative records that belong to each group of distance bins. These will be used to sample a commodity group for the **UNKNOWN** commodity group. The process is as follows:  
+
+* Calculate a representative for each commodity group by generating the means for all the continous variables.  
+* Rescale the NW and distance variables to fall between -1 and 1. This is important for we need to do a **Euclidean (L2)** calculation.  
+* Calculate each of the **UNKNOWN** records distance to these representatives. 
+* The distance acts as weights for sampling a CVS_COMMODITY_GROUP.  
+
+```{r, Generate representative values across the segments for the Known Commodity Groups}
+
+# These bins look OK. So lets transfer the information over to the main dataframe
+dnn_df1 <- dnn_df %>%
+  transform(., km_bin = ifelse(.$tour_dist <= 1500, cut(.$tour_dist, breaks = dist_breaks), 16)) 
+
+# generate representatives for sampling
+dist_kns <- dnn_df1 %>%
+  subset(., select = -c(ID, csduid, km_bin)) %>%
+  subset(., cvs_comm_group != 99) %>%
+  group_by(cvs_comm_group) %>%
+  summarise_all(mean)
+
+# mean nd variance
+m_nw <- mean(dist_kns$nw)
+v_nw <- var(dist_kns$nw)
+m_td <- mean(dist_kns$tour_dist)
+v_td <- var(dist_kns$tour_dist)
+
+dist_kns <- dist_kns %>%
+  transform(., nw = (nw-m_nw)/v_nw) %>%  # Rescale NW and distance columns need to be scaled to between -1 and 1.
+  transform(., tour_dist = (tour_dist-m_td)/v_td)
+
+# save original number of rows of the distribution dataframe
+# Also find the number of rows that have the UNKNOWN label in the commodity group. The distribution dataframe will be 
+# repeated so many times
+rows_dist_kns <- nrow(dist_kns)
+rows_dnn_unks <- nrow(subset(dnn_df, cvs_comm_group == 99))
+
+# repeat dataframe as many times as there are records in the UNKNOWN dataframe. This will allow for matrix operations
+
+dist_kns <- dist_kns[rep(seq.int(1,nrow(dist_kns)),rows_dnn_unks), 1:ncol(dist_kns)]
+
+```
+
+
+```{r, Now generate the CVS groups for the UNKNOWNS}
+
+dnn_unks <- dnn_df1 %>%
+  subset(., cvs_comm_group == 99) %>%
+  subset(., select = -c(csduid, km_bin, cvs_comm_group))
+
+# mean and variance
+m_nw <- mean(dnn_unks$nw)
+v_nw <- var(dnn_unks$nw)
+m_td <- mean(dnn_unks$tour_dist)
+v_td <- var(dnn_unks$tour_dist)
+
+dnn_unks <- dnn_unks %>%
+  transform(., nw = (nw-m_nw)/v_nw) %>%  # Rescale NW and distance columns need to be scaled to between -1 and 1.
+  transform(., tour_dist = (tour_dist-m_td)/v_td)
+
+# repeat the rows to match the number of records in the distribution and sort on ID to ensure that all the records with the same ID are together
+dnn_unks1 <- dnn_unks[rep(seq.int(1,nrow(dnn_unks)),rows_dist_kns), 1:ncol(dnn_unks)] %>%
+  .[order(.$ID),]
+
+# Calculate EUCLIDEAN
+euc_dist <- (dnn_unks1[,c(2:23)]-dist_kns[,c(2:23)])^2
+euc_dist <- transform(euc_dist, euc_dist_final = rowSums(euc_dist))
+
+# Now append the necessary columns back to the UNKNOWN dataframe for sampling a commodity label
+temp_df <- cbind(dist_kns[,1], euc_dist[,23])
+colnames(temp_df) <- c("cvs_comm_group", "euc_dist")
+dnn_unks1 <- cbind(dnn_unks1, temp_df)
+
+# SAMPLE COMMODITY GROUP
+seed = 1234
+sampled_comm <- dnn_unks1 %>%
+  subset(., select = c(ID, cvs_comm_group, euc_dist)) %>%
+  subset(., cvs_comm_group < 97) %>%
+  group_by(ID) %>%
+  sample_n(., size = 1, weight = euc_dist) %>%
+  subset(., select = -c(euc_dist))
+colnames(sampled_comm) <- c("ID", "syn_comm_group")
+
+ggplot(sampled_comm, aes(x=syn_comm_group)) + 
+  geom_bar(stat = "count") +
+  theme(axis.text.x=element_text(angle=90,hjust=1)) +
+  ggtitle("Sampled commodities from the Euclidean Distances for the UNKNOWN commodities")
+
+# attach the commodity group using ID field. COnvert the target vector to character
+dnn_df1 <- merge(dnn_df1, sampled_comm, by = "ID", all.x = TRUE) %>%
+  transform(., cvs_comm_group = ifelse(cvs_comm_group == 99, syn_comm_group, cvs_comm_group)) %>%
+  subset(., cvs_comm_group != 97)
+
+dnn_df1$cvs_comm_group <- as.factor(dnn_df1$cvs_comm_group)
+dnn_df1$syn_comm_group[is.na(dnn_df1$syn_comm_group)] <- 0
+
+
+ggplot(dnn_df1, aes(x=cvs_comm_group)) + 
+  geom_bar(stat = "count") +
+  theme(axis.text.x=element_text(angle=90,hjust=1)) +
+  ggtitle("Final commodities after including the synthesized ones")
+```
+
+# The BEST FOUR CLASS MODEL  
+
+*This is an interim saving of the best four class model after running SMOTE. The test set does not include any SMOTE records and thus represents an original 20% sample from the processed CVS.* 
+
+## Split and Group Data
+We'll be creating a cross-validation set from the training set to evaluate our model against. Use createDataPartition() to split our training data into two sets : 75% and 25%. Since, the outcome is categorical in nature, this will make sure that the distribution of outcome variable classes will be similar in both the sets. 
+
+
+```{r}
+#Spliting training set into two parts based on outcome: 75% and 25%
+dnn_df1 <- dnn_df %>%
+  .[-c(1)] %>%
+  select(c(cvs_comm_group,sctg2), everything())
+
+# Remove Empty
+dnn_df1 <- dnn_df1 %>%
+  subset(., sctg2 >0) %>%
+  # transform(., new_comm = cvs_comm_group) %>%
+  transform(., urban_area = ifelse(urban_area == 2,1,urban_area)) %>%
+  transform(., ln_dist = log(.$tour_dist)) %>%
+  transform(., ln_nw = log(.$nw)) %>%
+  transform(., nw_dist = tour_dist/nw) %>%
+  transform(., us_grp = ifelse(sctg2 %in% c(1:5),1,
+                               ifelse(sctg2 %in% c(6:9),2,
+                                      ifelse(sctg2 %in% c(10:14),3,
+                                             ifelse(sctg2 %in% c(15:19),4,
+                                                    ifelse(sctg2 %in% c(20:24),5,
+                                                           ifelse(sctg2 %in% c(25:30),6,
+                                                                  ifelse(sctg2 %in% c(31:34),7,
+                                                                         ifelse(sctg2 %in% c(35:38),8,9))))))))) %>%
+  subset(., select = -c(cvs_comm_group, csduid)) %>%
+  select(c(sctg2,us_grp), everything())
+  # select(new_comm, everything())
+
+un <- dnn_df1 %>%
+  group_by(sctg2) %>%
+  summarise(c = n())
+
+################################################################
+# Too many group as yet. Need to cluster them using the Kmeans results.
+
+# MAUSAM's TREE
+# dnn_df1 <- dnn_df1 %>%
+#   transform(. , new_comm = ifelse(cvs_comm_group %in% c(1,2), 1,
+#                                   ifelse(cvs_comm_group %in% c(3,4,5,6,7,8,9),1,
+#                                          ifelse(cvs_comm_group %in% c(10,11,13,14),2,4))))
+
+# BRYCE's TREE
+# dnn_df1 <- dnn_df1 %>%
+#   transform(. , new_comm = ifelse(cvs_comm_group %in% c(1,3,6), 1,
+#                                   ifelse(cvs_comm_group %in% c(4,5,7),2,
+#                                          ifelse(cvs_comm_group %in% c(2,8,9,10,13,14),3,4))))
+
+# MATT's TREE
+# dnn_df1 <- dnn_df1 %>%
+#   transform(. , new_comm = ifelse(cvs_comm_group %in% c(1,3), 1,
+#                                   ifelse(cvs_comm_group %in% c(4,5,6,7),2,
+#                                          ifelse(cvs_comm_group %in% c(2,8,9,10,14),3,
+#                                                 ifelse(cvs_comm_group %in% c(11),4,
+#                                                        ifelse(cvs_comm_group %in% c(13), 5, 6))))))
+
+# RICK's HAIL MARY TREE
+# dnn_df1 <- transform(dnn_df1, new_comm = cvs_comm_group)
+
+# PAUL's TREE
+# dnn_df1 <- dnn_df1 %>%
+#   transform(. , new_comm = ifelse(cvs_comm_group %in% c(1,2), 1,
+#                                   ifelse(cvs_comm_group %in% c(3,4,5,16,98),2,
+#                                          ifelse(cvs_comm_group %in% c(6,7,8,9,10),3,4))))
+
+
+# US GROUP TREE
+
+                                                
+index <- createDataPartition(dnn_df1$sctg2, p=0.2, list=FALSE)
+testSet <- dnn_df1[index,]
+testSet <- testSet %>%
+  .[-c(2)]
+colnames(testSet)[1] <- "class"
+testSet$class <- as.factor(testSet$class)
+
+#################################################################
+# generate new records using SMOTE on the Training set only
+trainSet <- dnn_df1[-index,]
+table(trainSet$sctg2)
+
+# MAUSAM
+# genData = SMOTE(trainSet[,-c(1,2,25)],trainSet[,1], dup_size = 40, K=6)
+# g <- genData$data
+# table(g$class)
+# genData_2 = SMOTE(g[,-c(26)],g[,26],dup_size = 4, K=6)
+# g1 <- genData_2$data
+# table(g1$class)
+# re-write df1 to the synthesized database
+# trainSet <- g1
+# trainSet$class <- as.factor(trainSet$class)
+
+# BRYCE
+# genData = SMOTE(trainSet[,-c(1,2,25)],trainSet[,1], dup_size = 5, K=6)
+# g <- genData$data
+# table(g$class)
+# genData_2 = SMOTE(g[,-c(26)],g[,26],dup_size = 1.45, K=6)
+# g1 <- genData_2$data
+# table(g1$class)
+# genData_3 = SMOTE(g1[,-c(26)],g1[,26],dup_size = 1.45, K=6)
+# g2 <- genData_3$data
+# table(g2$class)
+# # re-write df1 to the synthesized database
+# trainSet <- g2
+# trainSet$class <- as.factor(trainSet$class)
+
+# MATT
+# genData = SMOTE(trainSet[,-c(1,2,25)],trainSet[,1], dup_size = 20, K=6)
+# g <- genData$data
+# table(g$class)
+# genData_2 = SMOTE(g[,-c(26)],g[,26],dup_size = 20, K=6)
+# g1 <- genData_2$data
+# table(g1$class)
+# genData_3 = SMOTE(g1[,-c(26)],g1[,26],dup_size = 9, K=6)
+# g2 <- genData_3$data
+# table(g2$class)
+# genData_4 = SMOTE(g2[,-c(26)],g2[,26],dup_size = 2, K=6)
+# g3 <- genData_4$data
+# table(g3$class)
+# # re-write df1 to the synthesized database
+# trainSet <- g3
+# trainSet$class <- as.factor(trainSet$class)
+
+# RICK
+# genData = SMOTE(trainSet[,-c(1,2,25)],trainSet[,1], dup_size = 9, K=6)
+# g <- genData$data
+# table(g$class)
+# genData_2 = SMOTE(g[,-c(26)],g[,26],dup_size = 3, K=6)
+# g1 <- genData_2$data
+# table(g1$class)
+# genData_3 = SMOTE(g1[,-c(26)],g1[,26],dup_size = 3, K=6)
+# g2 <- genData_3$data
+# table(g2$class)
+# genData_4 = SMOTE(g2[,-c(26)],g2[,26],dup_size = 2, K=6)
+# g3 <- genData_4$data
+# table(g3$class)
+# # re-write df1 to the synthesized database
+# trainSet <- g3
+# trainSet$class <- as.factor(trainSet$class)
+
+# PAUL
+# genData = SMOTE(trainSet[,-c(1,2,25)],trainSet[,1], dup_size = 4, K=6)
+# g <- genData$data
+# table(g$class)
+# genData_2 = SMOTE(g[,-c(26)],g[,26],dup_size = 1.45, K=6)
+# g1 <- genData_2$data
+# table(g1$class)
+# genData_3 = SMOTE(g1[,-c(26)],g1[,26],dup_size = 1.45, K=6)
+# g2 <- genData_3$data
+# table(g2$class)
+# # re-write df1 to the synthesized database
+# trainSet <- g2
+# trainSet$class <- as.factor(trainSet$class)
+
+# US GRP
+# genData = SMOTE(trainSet[,-c(1,2,25)],trainSet[,2], dup_size = 10, K=6)
+# g <- genData$data
+# table(g$class)
+# genData_2 = SMOTE(g[,-c(26)],g[,26],dup_size = 2, K=6)
+# g1 <- genData_2$data
+# table(g1$class)
+# genData_3 = SMOTE(g1[,-c(26)],g1[,26],dup_size = 2, K=6)
+# g2 <- genData_3$data
+# table(g2$class)
+# genData_4 = SMOTE(g2[,-c(26)],g2[,26],dup_size = 2, K=6)
+# g3 <- genData_4$data
+# table(g3$class)
+# genData_5 = SMOTE(g3[,-c(26)],g3[,26],dup_size = 2, K=6)
+# g4 <- genData_5$data
+# table(g4$class)
+# genData_6 = SMOTE(g4[,-c(26)],g4[,26],dup_size = 2, K=6)
+# g5 <- genData_6$data
+# table(g5$class)
+# genData_7 = SMOTE(g5[,-c(26)],g5[,26],dup_size = 1.2, K=6)
+# g6 <- genData_7$data
+# table(g6$class)
+# genData_8 = SMOTE(g6[,-c(26)],g6[,26],dup_size = 1.2, K=6)
+# g7 <- genData_8$data
+# table(g7$class)
+# genData_9 = SMOTE(g7[,-c(26)],g7[,26],dup_size = 1.2, K=6)
+# g8 <- genData_9$data
+# table(g8$class)
+# 
+# # re-write df1 to the synthesized database
+# trainSet <- g8
+# trainSet$class <- as.factor(trainSet$class)
+
+trainSet <- trainSet %>%
+  .[,-c(2)]
+colnames(trainSet)[1] <- "class"
+trainSet$class <- as.factor(trainSet$class)  
+
+##################################################################
+
+ggplot(trainSet, aes(x=class)) + 
+  geom_bar(stat = "count") +
+  theme(axis.text.x=element_text(angle=90,hjust=1)) +
+  ggtitle("Final commodities after including the synthesized ones")
+
+ggplot(testSet, aes(x=class)) + 
+  geom_bar(stat = "count") +
+  theme(axis.text.x=element_text(angle=90,hjust=1)) +
+  ggtitle("Commodities in Test Data")
+
+
+```
+
+
+
+
+## Build the First Round of DNN  
+
+```{r}
+h2o.shutdown(prompt = FALSE)
+h2o.init(nthreads = 3)
+
+train <- as.h2o(trainSet)
+test <- as.h2o(testSet)
+
+# Deep Learner
+# model <- h2o.deeplearning(x=colnames(train[c(2,4,6:26)]), 
+#                           y = "new_comm", 
+#                           training_frame = train, 
+#                           hidden = c(1500,500,300,100),
+#                           activation = "RectifierWithDropout",
+#                           weights_column = "weights",
+#                           epochs=10,
+#                           train_samples_per_iteration = -1,
+#                           score_training_samples = 0,
+#                           score_validation_samples=0,
+#                           validation_frame = test)
+# # CF
+# h2o.confusionMatrix(model)
+# 
+# # Auto ML
+# model1 <- h2o.automl(y="class", 
+#                      training_frame = train[c(1:26)], 
+#                      max_runtime_secs = 1200,
+#                      nfolds = 5)
+# 
+# lb <- model1@leaderboard
+# model_ids <- as.data.frame(model1@leaderboard$model_id)[,1]
+# # Get the "All Models" Stacked Ensemble model
+# se <- h2o.getModel(grep("XRT", model_ids, value = TRUE)[1])
+# # variable importance
+# h2o.varimp_plot(se)
+# 
+# print(model1@leaderboard)
+# print(model1@leader)
+
+
+# we have chosen the Distributed RF for further exploration
+
+# GBM
+model_rf <- h2o.gbm(
+                        model_id = "GBM_Attempt1",
+                        x=colnames(train[c(2:27)]), 
+                        y = "class", 
+                        training_frame = train,
+                        nfolds = 5,
+                        keep_cross_validation_predictions = TRUE,
+                        ntrees = 75,
+                        stopping_tolerance = 0.005,
+                        stopping_rounds = 0,
+                        sample_rate = 1.0,
+                        max_depth = 30,
+                        min_rows = 5,
+                        nbins = 40,
+                        distribution = "multinomial",
+                        fold_assignment = "Stratified")
+
+
+# lb <- model_rf@model$cross_validation_models[2]
+# 
+# ## Using the DNN model for predictions
+# h2o_yhat_test <- h2o.predict(model_rf, test)
+# 
+# ## Converting H2O format into data frame
+# df_yhat_test <- as.data.frame(h2o_yhat_test)
+
+
+h2o.flow()
+
+```
+
+
+## Cluster the individual SCTG2 using Cosine 
+
+```{r}
+
+# apply the model_rf and get the confusion matrix
+
+cm <- h2o.confusionMatrix(model_rf, test) %>%
+  .[1:43, c(1:43)]
+cm$tot <- rowSums(cm[,])
+
+# compute percentages
+cm1 <- cm/cm$tot 
+cm1 <- cm1[,c(1:43)]
+
+
+cm1$class <- rownames(cm1)
+cm1 <- cm1 %>%
+  select(class, everything())
+cm1$class <- as.numeric(as.character(cm1$class))
+
+# generate the combinations
+char.var <- c(cm1$class)
+df = as.data.frame(combinations(n=length(char.var), r=2, v=char.var))
+
+# Now generate the clusters using confusion matrix
+result <- c()
+
+for (i in 1:nrow(df)) {
+  if(i %% 100==0) {
+    print(i)
+  }
+  # make individual vectors and put them in list
+  vec1 <- df[i,1]
+  vec2 <- df[i,2]
+  v <- c(vec1, vec2)
+  v_chr <- c(as.character(vec1), as.character(vec2))
+  
+  slice_cm <- subset(cm, rownames(cm) %in% v) %>%
+    select(., v_chr)
+  
+  dot_prod <- sum(slice_cm[1,]*slice_cm[2,])
+  norm_val <- sum(slice_cm[1,]*slice_cm[1,])*sum(slice_cm[2,]*slice_cm[2,])
+  
+  cos_theta <- dot_prod/norm_val
+  result[[i]] <- cos_theta
+  
+}
+
+# bind it all
+rdf <- as.data.frame(result)
+rdf[is.na(rdf)] <- 0
+df <- cbind(df, rdf) %>%
+  .[order(-result),]
+
+
+
+```
+
+
+# Old clutering using CF 
+
+```{r}
+
+for (i in 1:nrow(df)) {
+  
+  frow <- as.numeric(as.vector(df[i, ]))
+  df_1 <- cm1 %>%
+    subset(., class %in% frow)
+
+  result[[i]] <- sum(sapply(df_1[,c(2:ncol(df_1))],min))
+  
+}
+
+# bind it all
+rdf <- as.data.frame(result)
+df <- cbind(df, rdf) %>%
+  .[order(-result),]
+
+# Now make groups. 
+result1 <- c()
+df_cp <- df
+counter <- 1
+
+# specify number of clusters
+for(j in 1:22) {
+  print(j)
+
+  # get the first row
+  frow <- as.numeric(as.vector(df_cp[1,c(1:2)]))
+  result1[[counter]] <- frow
+  
+  # Now remove all the rows that have any of the above classes 
+  # because these cannot be grouped again
+  df1 <- df_cp %>%
+    subset(., !(V1 %in% frow | V2 %in% frow )) 
+  
+  # overwrite the copy so that the loop is getting information 
+  # from the reduced dataframe always
+  df_cp <- df1
+  
+  counter <- counter + 1
+
+  
+}
+
+clusters_df <- as.data.frame(result1)
+
+
+
+```
+
