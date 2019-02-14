@@ -1,0 +1,1366 @@
+---
+title: "DNN"
+date: "Nov 14, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r, echo=FALSE}
+
+library(tidyverse)
+library(data.table)
+library(reshape2)
+library(tictoc)
+library(h2o)
+library(smotefamily)
+library(FNN) # to run k nearest for SMOTE FAMILT
+library(gtools) # for combinations
+library(caret)
+library(sp)
+library(rgdal)
+library(rgeos)
+library(foreach)
+library(doParallel)
+
+
+
+
+```
+
+
+
+# PITNEY BOWES
+
+```{r, Batch in the Pitney Bowes shapefile, echo=FALSE}
+
+pb_shp<-readOGR("c:/projects/CVS_GPS/DNN","FirmSynthesisPoints_QTAssigned_totemp_LCC")
+rgeos::gIsValid(pb_shp)
+
+#get the database
+pb_shp_df <- pb_shp@data
+
+```
+
+# CVS and Data Munging
+
+```{r, Batch in the CVS}
+options(digits = 8)
+
+# batch in csd identifier. The idea is that if one is within the GGH or Trans the buffer and variance will be lower.
+csd_equiv <- read_csv("c:/projects/CVS_GPS/DNN/CSD_GGH.txt") %>%
+  .[,-c(1)]
+
+# Batch in the CVS data that Bryce has sent along and strip out unncessary columns
+cvs <- read_csv("c:/projects/CVS_GPS/DNN/cvs_tours_5.csv.gz") %>%
+  merge(., csd_equiv, by = "csduid", all.x = TRUE)
+cvs$GGH[is.na(cvs$GGH)] <- 0
+
+# xtabs(~cfaf_group + cvs_comm_group, data = cvs)
+# xtabs(~cvs_comm_group + sctg2, data = cvs)
+
+# generate CFAF groups by Tour ID
+cfaf_tour <- cvs %>%
+  group_by(ID) %>%
+  summarise(cfaf = min(cfaf_group))
+
+# get the points from the CVS dataframe
+xy <- cvs %>%
+  subset(., select = c(latitude, longitude)) %>%
+  transform(ID = 1:nrow(.))
+colnames(xy) <- c("Y", "X", "ID")
+coordinates(xy) <- c("X", "Y") 
+
+xydf <- xy@coords
+
+# set the projection system
+proj4string(xy) <- CRS("+init=epsg:4326")
+
+# Get the projection system from the Pitney Bowes points file and set the CVS to the same
+pb_proj <- pb_shp@proj4string
+res <- as.data.frame(spTransform(xy, pb_proj)) %>%
+  subset(., select = -c(ID))
+
+# Now convert the CVS to a spatial points dataframe
+cvs <- cbind(cvs, res)
+cvs_spdf <- SpatialPointsDataFrame(coords = res, data = cvs, proj4string = pb_proj)
+cvs_spdf@data$seq_id <- 1:nrow(cvs_spdf@data)
+
+# xtabs(~sctg2+cvs_comm_group, data=cvs)
+
+```
+
+
+
+```{r}
+
+cvs_df <- cvs_spdf@data
+
+# multiple buffer sizes
+buff_size_urban <- 250
+buff_size_rural <- 500
+variance <- -2
+increment <- 250
+max_buff_area <- pi*(4000^2)
+
+# create all buffers at once by urban vs rural
+cvs_spdf_urban <- cvs_spdf[cvs_spdf@data$GGH >0, ]
+bufferedPoints_urb <- gBuffer(cvs_spdf_urban, width=buff_size_urban, byid=TRUE)
+
+
+cvs_spdf_rural <- cvs_spdf[cvs_spdf@data$GGH ==0, ]
+bufferedPoints_rur <- gBuffer(cvs_spdf_rural, width=buff_size_rural, byid=TRUE)
+
+# one parent buffer dataframe
+bufferedPoints <- rbind(bufferedPoints_urb, bufferedPoints_rur, makeUniqueIDs = TRUE) 
+
+# Calculate the Gaussian Distance now
+datalist = list()
+tic("Build Gaussian Distances")
+
+#setup parallel backend to use many processors
+cores=detectCores()
+cl <- makeCluster(cores[1]-1) #not to overload your computer
+registerDoParallel(cl)
+
+# cvs_df <- cvs_df[1:100,]
+writeLines(c(""), "log.txt")
+sink("log.txt")
+
+
+datalist <- foreach(i = 1:nrow(bufferedPoints@data), .packages=c("sp", "dplyr", "reshape2", "rgeos")) %dopar% {
+
+  
+  cat(paste("\n","Starting iteration",i,"\n"), file = "log.txt", append = TRUE)
+
+  # select the buffer polygon around the CVS
+ 
+  first <- bufferedPoints[bufferedPoints@data$seq_id == i, ]
+  # plot(first)
+  # writeOGR(first, "C:/projects/CVS_GPS/DNN", "onebuffer1", driver = "ESRI Shapefile")
+
+  # get the dataframe of the buffer
+  firstdf <- first@data 
+  
+  # Get all the Pitney Bowes firms inside the buffer
+  pb_in_poly <- pb_shp[first,]
+  pdf <- pb_in_poly@data
+  
+  # get defaults
+  numrows_pdf <- nrow(pdf)
+  area_buff <- first@polygons[[1]]@area
+  marginal_buff <- increment/2
+  
+  while (numrows_pdf< 1 ) {
+    
+    
+    first <- gBuffer(first, width = marginal_buff, byid=TRUE)
+    
+    # Get all the Pitney Bowes firms inside the buffer
+    pb_in_poly <- pb_shp[first,]
+    pdf <- pb_in_poly@data
+    
+    numrows_pdf <- nrow(pdf)
+    marginal_buff <- marginal_buff + increment/2
+    area_buff <- first@polygons[[1]]@area
+    
+    print(numrows_pdf)
+    print(area_buff)
+    print(marginal_buff)
+    sink()
+    
+    if (area_buff > max_buff_area){
+      break
+    }
+    
+  }
+  # plot(first)
+  # plot(pb_in_poly, col = "red", add = TRUE)
+
+  # only if some firms were found in the buffer
+  if(nrow(pb_in_poly@data)>0){
+    
+    # save the Pitney Bowes firms inside the buffer
+    pb_in_poly_df <- pb_in_poly@data %>%
+      merge(., pb_shp_df, by = "firm_id", all.x = TRUE) %>%
+      subset(., select = c(firm_id, csd_id.x, naics_code.x, size_categ.x, lat.y, lon.y, emp.x ))
+    colnames(pb_in_poly_df) <- c("firm_id", "csd_id", "naics_code", "size", "lat", "lon", "emp")
+    
+    first_df <- bind_rows(replicate(nrow(pb_in_poly_df), firstdf, simplify = FALSE)) %>%
+      cbind(., pb_in_poly_df)
+
+    # Gaussian distance and percentage calculation
+    first_df$euc <- sqrt(((first_df$X-first_df$lon)/10000)^2 + ((first_df$Y-first_df$lat)/10000)^2)   # scale down by 10000 to avoid overflow
+    first_df$var <- variance*first_df$euc
+    first_df$gauss_dist <- exp(first_df$var)
+    first_df$pct <- (first_df$emp*first_df$gauss_dist)/sum(first_df$emp*first_df$gauss_dist)
+    
+    # calculate probabilities by NAICS
+    naics_pct <- first_df %>%
+      group_by(naics_code) %>%
+      summarise(naics_wt = sum(pct),naics_jobs = sum(emp) ) %>%
+      transform(., id = first_df$ID[1]) %>%
+      recast(.,id ~ variable + naics_code, id.var = c("id","naics_code")) %>%
+      subset(., select = -c(id))
+
+    # Bind it all together
+    firstdf <- cbind(firstdf, naics_pct)
+    
+    datalist[[i]] <- firstdf
+    
+  } else {
+    
+    datalist[[i]] <- firstdf
+    
+  }
+
+
+}
+
+
+stopCluster(cl)
+toc()
+
+# One dataframe of all Buffers and the gaussian distances. Get rid of NAs
+big_data1 = rbindlist(datalist, fill = TRUE)
+big_data1[is.na(big_data1)] <- 0
+
+sink()
+
+write.csv(big_data1, "c:/projects/CVS_GPS/DNN/big_data1.csv", row.names = FALSE)
+
+```
+
+## Build the DNN dataset
+```{r, Now build the DNN dataset}
+
+dnn_df_partial1 <- big_data1 %>%
+  .[, c(2,10)] %>%
+  group_by(ID) %>%
+  summarise(num_stops = n(), tour_dist = mean(tour_dist))
+  
+
+dnn_df_partial2 <- big_data1 %>%
+  transform(., trans = ifelse(csduid == 3506008,1,0)) %>%
+  transform(., GGH = ifelse(GGH == 2,0,GGH)) %>%   # set the Ottawa back to 0. We will handle this in the next line
+  transform(., ggh_trans = GGH+trans) %>%
+  .[, c(2, 62)] %>%
+  group_by(ID) %>%
+  summarise(ggh_trans = sum(ggh_trans)) %>%
+  transform(., ggh_trans = ifelse(ggh_trans == 0, 0,
+                                ifelse(ggh_trans == 1,1,2)))
+
+dnn_df_partial3 <- big_data1 %>%
+  .[,c(1:2)] %>%
+  group_by(ID) %>%
+  summarise(csd = first(csduid))
+
+dnn_df_partial4 <- big_data1 %>%
+  .[,c(2,21:60)] %>%
+  group_by(ID) %>%
+  summarise_all(sum)
+
+dnn_df <- merge(dnn_df_partial1, dnn_df_partial2, by="ID") %>%
+  merge(., dnn_df_partial3, by = "ID") %>%
+  merge(., dnn_df_partial4, by = "ID")
+
+# Get Tours that got no Pitney Bowes in the buffer. This is because the distance buffer maxed out before finding any firms. 
+# These tours will be taken out before training.
+dnn_df$sum <- rowSums(dnn_df[, 5:44])
+zeros <- subset(dnn_df, sum == 0)
+
+dnn_df <- subset(dnn_df, sum != 0) %>%
+  subset(., select = -c(sum))
+
+# Save this interim step
+write_csv(dnn_df, "c:/projects/CVS_GPS/DNN/dnn_df_variablebuffer_1.csv")
+dnn_df <- read.csv("c:/projects/CVS_GPS/DNN/dnn_df_variablebuffer_1.csv", stringsAsFactors = FALSE)
+
+  
+###########################
+# The above dnn_df includes trucks that dont have a GPS on them as well. Because we want to apply this to the GPS, we are going to only keep records that have a GPS on the truck
+# cvs_tracked <- read_csv("c:/projects/CVS_GPS/DNN/cvs_tours_5_tracked_vehs.csv.gz") %>%
+#   group_by (ID) %>%
+#   summarise(count=n()) %>%
+#   transform(., tracked = 1) %>%
+#   subset(., select = c(ID, tracked)) 
+# 
+# 
+# dnn_df <- merge(dnn_df, cvs_tracked, by="ID", all.x = TRUE) %>%
+#   subset(., tracked > 0) %>%
+#   subset(., select = -c(tracked))
+
+#############################
+# new tours that Bryce generated
+cvs7 <- read_csv("C:/projects/cvs_gps/dnn/cvs_tours_7_all_vehs2.csv")
+
+cfaf_tour <- cvs7 %>%
+  group_by(ID) %>%
+  summarise(cfaf = min(cfaf_group))
+
+# get week flag
+wk_flag <- cvs7 %>%
+  group_by(ID) %>%
+  summarise(week_flag = min(is_weekend)) %>%
+  transform(., week_flag = ifelse(week_flag == 1, "T", "F"))
+
+# Only keep the records that have a CFAF group
+dnn_df <- read_csv("c:/projects/CVS_GPS/DNN/dnn_df_variablebuffer_1.csv") %>%
+  merge(., cfaf_tour, by = "ID") %>% 
+  merge(., wk_flag, by = "ID") %>%
+  drop_na()
+
+```
+
+
+
+# Level 1 DNN NOW  
+
+## Do Something about the *Semi-Known : Unknowns*  
+
+There are around 12042 observations that had **unknown** as a commodity. Ignoring this in a tour-based setup is a challenge for it reduces the dataset by 25%.  
+
+We can drop these from the final training, but I need to impute a label for two reasons:  
+
+* First, augment the training dataset  
+* Use it in the testing dataset and compare results against the imputation.  
+
+
+```{r, Understand the Unknowns}
+
+# Let's see how the Unknowns are distributed by distance band
+# generate breaks up to 3000 kms. Beyond that it is a single group
+dist_breaks <- seq(0, 1500, by = 100) 
+bin_kns <- subset(dnn_df, cvs_comm_group != 99) %>%
+  transform(., km_bin = ifelse(.$tour_dist <= 1500, cut(.$tour_dist, breaks = dist_breaks), 16)) %>% 
+              group_by(km_bin) %>% 
+              summarise(bin_cnt = n()) %>%
+              transform(., cumulative = cumsum(.$bin_cnt/sum(.$bin_cnt)))
+
+ggplot(bin_kns, aes(x=km_bin, y=bin_cnt)) + 
+  geom_bar(stat = "identity") +
+  theme(axis.text.x=element_text(angle=90,hjust=1))
+
+
+```
+
+Let's make representative records that belong to each group of distance bins. These will be used to sample a commodity group for the **UNKNOWN** commodity group. The process is as follows:  
+
+* Calculate a representative for each commodity group by generating the means for all the continous variables.  
+* Rescale the NW and distance variables to fall between -1 and 1. This is important for we need to do a **Euclidean (L2)** calculation.  
+* Calculate each of the **UNKNOWN** records distance to these representatives. 
+* The distance acts as weights for sampling a CVS_COMMODITY_GROUP.  
+
+```{r, Generate representative values across the segments for the Known Commodity Groups}
+
+# These bins look OK. So lets transfer the information over to the main dataframe
+dnn_df1 <- dnn_df %>%
+  transform(., km_bin = ifelse(.$tour_dist <= 1500, cut(.$tour_dist, breaks = dist_breaks), 16)) 
+
+# generate representatives for sampling
+dist_kns <- dnn_df1 %>%
+  subset(., select = -c(ID, csduid, km_bin)) %>%
+  subset(., cvs_comm_group != 99) %>%
+  group_by(cvs_comm_group) %>%
+  summarise_all(mean)
+
+# mean nd variance
+m_nw <- mean(dist_kns$nw)
+v_nw <- var(dist_kns$nw)
+m_td <- mean(dist_kns$tour_dist)
+v_td <- var(dist_kns$tour_dist)
+
+dist_kns <- dist_kns %>%
+  transform(., nw = (nw-m_nw)/v_nw) %>%  # Rescale NW and distance columns need to be scaled to between -1 and 1.
+  transform(., tour_dist = (tour_dist-m_td)/v_td)
+
+# save original number of rows of the distribution dataframe
+# Also find the number of rows that have the UNKNOWN label in the commodity group. The distribution dataframe will be 
+# repeated so many times
+rows_dist_kns <- nrow(dist_kns)
+rows_dnn_unks <- nrow(subset(dnn_df, cvs_comm_group == 99))
+
+# repeat dataframe as many times as there are records in the UNKNOWN dataframe. This will allow for matrix operations
+
+dist_kns <- dist_kns[rep(seq.int(1,nrow(dist_kns)),rows_dnn_unks), 1:ncol(dist_kns)]
+
+```
+
+
+```{r, Now generate the CVS groups for the UNKNOWNS}
+
+dnn_unks <- dnn_df1 %>%
+  subset(., cvs_comm_group == 99) %>%
+  subset(., select = -c(csduid, km_bin, cvs_comm_group))
+
+# mean and variance
+m_nw <- mean(dnn_unks$nw)
+v_nw <- var(dnn_unks$nw)
+m_td <- mean(dnn_unks$tour_dist)
+v_td <- var(dnn_unks$tour_dist)
+
+dnn_unks <- dnn_unks %>%
+  transform(., nw = (nw-m_nw)/v_nw) %>%  # Rescale NW and distance columns need to be scaled to between -1 and 1.
+  transform(., tour_dist = (tour_dist-m_td)/v_td)
+
+# repeat the rows to match the number of records in the distribution and sort on ID to ensure that all the records with the same ID are together
+dnn_unks1 <- dnn_unks[rep(seq.int(1,nrow(dnn_unks)),rows_dist_kns), 1:ncol(dnn_unks)] %>%
+  .[order(.$ID),]
+
+# Calculate EUCLIDEAN
+euc_dist <- (dnn_unks1[,c(2:23)]-dist_kns[,c(2:23)])^2
+euc_dist <- transform(euc_dist, euc_dist_final = rowSums(euc_dist))
+
+# Now append the necessary columns back to the UNKNOWN dataframe for sampling a commodity label
+temp_df <- cbind(dist_kns[,1], euc_dist[,23])
+colnames(temp_df) <- c("cvs_comm_group", "euc_dist")
+dnn_unks1 <- cbind(dnn_unks1, temp_df)
+
+# SAMPLE COMMODITY GROUP
+seed = 1234
+sampled_comm <- dnn_unks1 %>%
+  subset(., select = c(ID, cvs_comm_group, euc_dist)) %>%
+  subset(., cvs_comm_group < 97) %>%
+  group_by(ID) %>%
+  sample_n(., size = 1, weight = euc_dist) %>%
+  subset(., select = -c(euc_dist))
+colnames(sampled_comm) <- c("ID", "syn_comm_group")
+
+ggplot(sampled_comm, aes(x=syn_comm_group)) + 
+  geom_bar(stat = "count") +
+  theme(axis.text.x=element_text(angle=90,hjust=1)) +
+  ggtitle("Sampled commodities from the Euclidean Distances for the UNKNOWN commodities")
+
+# attach the commodity group using ID field. COnvert the target vector to character
+dnn_df1 <- merge(dnn_df1, sampled_comm, by = "ID", all.x = TRUE) %>%
+  transform(., cvs_comm_group = ifelse(cvs_comm_group == 99, syn_comm_group, cvs_comm_group)) %>%
+  subset(., cvs_comm_group != 97)
+
+dnn_df1$cvs_comm_group <- as.factor(dnn_df1$cvs_comm_group)
+dnn_df1$syn_comm_group[is.na(dnn_df1$syn_comm_group)] <- 0
+
+
+ggplot(dnn_df1, aes(x=cvs_comm_group)) + 
+  geom_bar(stat = "count") +
+  theme(axis.text.x=element_text(angle=90,hjust=1)) +
+  ggtitle("Final commodities after including the synthesized ones")
+```
+
+# The BEST FOUR CLASS MODEL  
+
+*This is an interim saving of the best four class model after running SMOTE. The test set does not include any SMOTE records and thus represents an original 20% sample from the processed CVS.* 
+
+## Split and Group Data
+We'll be creating a cross-validation set from the training set to evaluate our model against. Use createDataPartition() to split our training data into two sets : 75% and 25%. Since, the outcome is categorical in nature, this will make sure that the distribution of outcome variable classes will be similar in both the sets. 
+
+
+```{r}
+set.seed(42)
+# dnn_df1 <- dnn_df %>%
+#   .[-c(1)] %>%
+#   transform(., sctg2 = ifelse(sctg2 %in% c(-2,-3,99),99,sctg2)) %>%
+#   subset(., !sctg2 %in% c(99,97))
+
+dnn_df1 <- dnn_df %>%
+  subset(., !cfaf %in% c("UNKNOWN", "NON_CARGO", "COAL"))
+
+# un <- dnn_df1 %>%
+#   group_by(sctg2) %>%
+#   summarise(c = n()) %>%
+#   transform(., pct = (c/sum(.$c))*100)
+
+un <- dnn_df1 %>%
+  group_by(cfaf) %>%
+  summarise(c = n()) %>%
+  transform(., pct = (c/sum(.$c))*100)
+
+# #Spliting training set into two parts based on outcome: 75% and 25%
+# dnn_df1 <- dnn_df %>%
+#   .[-c(1)] %>%
+#   subset(., sctg2 %in% c(5,12,35,23,42,6,39,27,26,31,33,34,32,3,41,24,7,36,43)) %>%
+#   select(c(cvs_comm_group,sctg2), everything())
+# 
+# un <- dnn_df1 %>%
+#   group_by(sctg2) %>%
+#   summarise(c = n()) %>%
+#   .[order(-.$c),]
+
+# Process the datafame
+dnn_df1 <- dnn_df1 %>%
+  transform(., ln_dist = log(tour_dist)) %>%
+  transform(., new_grp = cfaf) %>%
+  # transform(., weight = ifelse(new_grp == "FUELS",6,
+  #                              ifelse(new_grp == "WASTE",6,
+  #                                     ifelse(new_grp == "MNRLS", 6, 
+  #                                            ifelse(new_grp == "AGRI",6,
+  #                                                   ifelse(new_grp == "FRPAP",6,1)))))) %>%
+  transform(., weight = 1) %>%
+  subset(., select = -c(cfaf)) %>%
+  select(c(ID,new_grp,week_flag), everything())
+
+#################################################################
+
+# Get Test data before SMOTE
+index <- createDataPartition(dnn_df1$new_grp, p=0.2, list=FALSE)
+idx <- as.data.frame(index)
+
+# for (i in 7:46){
+# 
+#   index_zero <- dnn_df1[,i] > 0
+#   dnn_df1[index_zero,i] <- log(log(dnn_df12_exp[index_zero,i]))
+# }
+
+testSet <- dnn_df1[index,]
+colnames(testSet)[2] <- "class"
+testSet$class <- as.factor(testSet$class)
+testSet$week_flag <- as.factor(testSet$week_flag)
+testSet$ggh_trans <- as.factor(testSet$ggh_trans)
+testSet$csd <- as.factor(testSet$csd)
+
+# generate new records using SMOTE on the Training set only
+trainSet <- dnn_df1[-index,]
+colnames(trainSet)[2] <- "class"
+trainSet$class <- as.factor(trainSet$class)
+table(trainSet$class)
+
+# RUN SMOTE
+# genData = SMOTE(trainSet[,-c(1:2)],trainSet[,1], dup_size = 6, K=30)
+# g <- genData$data
+# table(g$class)
+# genData_2 = SMOTE(g[,-c(25)],g[,25],dup_size = 3, K=30)
+# g1 <- genData_2$data
+# table(g1$class)
+# genData_3 = SMOTE(g1[,-c(25)],g1[,25],dup_size = 3, K=30)
+# g2 <- genData_3$data
+# table(g2$class)
+# genData_4 = SMOTE(g2[,-c(25)],g2[,25],dup_size = 1.5, K=30)
+# g3 <- genData_4$data
+# table(g3$class)
+# genData_5 = SMOTE(g3[,-c(25)],g3[,25],dup_size = 4, K=30)
+# g4 <- genData_5$data
+# table(g4$class)
+# genData_6 = SMOTE(g4[,-c(25)],g4[,25],dup_size = 4, K=30)
+# g5 <- genData_6$data
+# table(g5$class)
+# genData_7 = SMOTE(g5[,-c(25)],g5[,25],dup_size = 4, K=30)
+# g6 <- genData_7$data
+# table(g6$class)
+# genData_8 = SMOTE(g6[,-c(24)],g6[,24],dup_size = 12, K=15)
+# g7 <- genData_8$data
+# table(g7$class)
+# genData_9 = SMOTE(g7[,-c(24)],g7[,24],dup_size = 9, K=15)
+# g8 <- genData_9$data
+# table(g8$class)
+# genData_10 = SMOTE(g8[,-c(24)],g8[,24],dup_size = 9, K=15)
+# g9 <- genData_10$data
+# table(g9$class)
+# genData_11 = SMOTE(g9[,-c(24)],g9[,24],dup_size = 8, K=15)
+# g10 <- genData_11$data
+# table(g10$class)
+# genData_12 = SMOTE(g10[,-c(24)],g10[,24],dup_size = 8, K=15)
+# g11 <- genData_12$data
+# table(g11$class)
+# genData_13 = SMOTE(g11[,-c(24)],g11[,24],dup_size = 7, K=15)
+# g12 <- genData_13$data
+# table(g12$class)
+# genData_14 = SMOTE(g12[,-c(24)],g12[,24],dup_size = 7, K=15)
+# g13 <- genData_14$data
+# table(g13$class)
+# genData_15 = SMOTE(g13[,-c(24)],g13[,24],dup_size = 7, K=15)
+# g14 <- genData_15$data
+# table(g14$class)
+# genData_16 = SMOTE(g14[,-c(24)],g14[,24],dup_size = 6, K=15)
+# g15 <- genData_16$data
+# table(g15$class)
+# genData_17 = SMOTE(g15[,-c(24)],g15[,24],dup_size = 2, K=6)
+# g16 <- genData_17$data
+# table(g16$class)
+# genData_18 = SMOTE(g16[,-c(24)],g16[,24],dup_size = 1.5, K=6)
+# g17 <- genData_18$data
+# table(g17$class)
+# genData_19 = SMOTE(g17[,-c(24)],g17[,24],dup_size = 3, K=6)
+# g18 <- genData_19$data
+# table(g18$class)
+# genData_20 = SMOTE(g18[,-c(24)],g18[,24],dup_size = 3, K=6)
+# g19 <- genData_20$data
+# table(g19$class)
+
+
+# re-write df1 to the synthesized database
+trainSet <- trainSet%>%
+  select(c(ID,class, week_flag), everything())
+trainSet$class <- as.factor(trainSet$class)
+trainSet$week_flag <- as.factor(trainSet$week_flag)
+trainSet$ggh_trans <- as.factor(trainSet$ggh_trans)
+trainSet$csd <- as.factor(trainSet$csd)
+
+
+##################################################################
+
+ggplot(trainSet, aes(x=class)) + 
+  geom_bar(stat = "count") +
+  theme(axis.text.x=element_text(angle=90,hjust=1)) +
+  ggtitle("Final commodities after including the synthesized ones")
+
+ggplot(testSet, aes(x=class)) + 
+  geom_bar(stat = "count") +
+  theme(axis.text.x=element_text(angle=90,hjust=1)) +
+  ggtitle("Commodities in Test Data")
+
+
+```
+
+
+
+
+## Build the First Round of DNN  
+
+```{r}
+h2o.shutdown(prompt = FALSE)
+h2o.init(nthreads = 6, max_mem_size = "32g")
+
+kfold_df <- rbind(trainSet, testSet)
+train <- as.h2o(kfold_df)
+
+train <- as.h2o(trainSet)
+test <- as.h2o(testSet)
+
+# Deep Learner
+# model <- h2o.deeplearning(x=colnames(train[c(2,4,6:26)]), 
+#                           y = "new_comm", 
+#                           training_frame = train, 
+#                           hidden = c(1500,500,300,100),
+#                           activation = "RectifierWithDropout",
+#                           weights_column = "weights",
+#                           epochs=10,
+#                           train_samples_per_iteration = -1,
+#                           score_training_samples = 0,
+#                           score_validation_samples=0,
+#                           validation_frame = test)
+# # CF
+# h2o.confusionMatrix(model)
+# 
+# # Auto ML
+# model1 <- h2o.automl(y="class", 
+#                      training_frame = train[c(1:26)], 
+#                      max_runtime_secs = 1200,
+#                      nfolds = 5)
+# 
+# lb <- model1@leaderboard
+# model_ids <- as.data.frame(model1@leaderboard$model_id)[,1]
+# # Get the "All Models" Stacked Ensemble model
+# se <- h2o.getModel(grep("XRT", model_ids, value = TRUE)[1])
+# # variable importance
+# h2o.varimp_plot(se)
+# 
+# print(model1@leaderboard)
+# print(model1@leader)
+
+
+# we have chosen the Distributed RF for further exploration
+
+# GBM
+model_rf <- h2o.gbm(
+                        model_id = "GBM_Attempt_CFAF_meta1",
+                        x=colnames(train[c(3:49)]), 
+                        y = "class", 
+                        training_frame = train,
+                        nfolds = 5,
+                        keep_cross_validation_predictions = TRUE,
+                        ntrees = 250,
+                        stopping_tolerance = 0.005,
+                        stopping_rounds = 0,
+                        sample_rate = 0.67,
+                        col_sample_rate = 0.67,
+                        max_depth = 150,
+                        min_rows = 3,
+                        nbins = 900,
+                        distribution = "multinomial",
+                        fold_assignment = "Stratified",
+                        weights = "weight",
+                        nbins_cats = 900)
+
+
+# lb <- model_rf@model$cross_validation_models[2]
+# 
+
+
+#################################################################
+h2o.flow()
+
+# Get the predictions on the TESTING DATA for further evaluation
+cvpreds_test <- as.data.frame(h2o.predict(model_rf, test))
+testSet <- cbind(testSet, cvpreds_test)
+
+write.csv(testSet, "C:/Projects/CVS_GPS/DNN/testSet.csv", row.names = FALSE)
+
+########################################################################
+# These are the CSDs that were not in the Training of the model. We can change the CSD criteria from FIRST to LAST
+csd_notused <- c(1007013, 1101036, 1101039, 1203001, 1205014, 1206004, 1206009, 1211009, 1215002, 1302044, 1304022, 1307016, 1308017, 1309027, 1310021, 1313006, 2413080, 2420015, 2421045, 2426070, 2427035, 2433045, 2438020, 2441065, 2445035, 2445085, 2445105, 2449025, 2454030, 2457035, 2461027, 2463035, 2466047, 2467005, 2471015, 2471050, 2472025, 2472043, 2476052, 2479010, 2479097, 2482015, 2484070, 2485025, 2491020, 2496020, 3539033, 3541045, 3547096, 3548031, 3549022, 3554008, 3554029, 3558059)
+
+# Only keep the interchanges that have a CSD that the model was trained on
+test_subset <- subset(testSet, !(csd %in% csd_notused))
+# make h2o frame
+test_subset <-as.h2o(test_subset)
+
+# Run prediction and then cbind it to Test data frame
+cvpreds_test1 <- as.data.frame(h2o.predict(model_rf, test_subset))
+test_subset1 <- cbind(as.data.frame(test_subset), cvpreds_test1)
+
+correct <- subset(test_subset1, class==predict)
+
+```
+
+
+# Bayesian Philosophy  
+
+So far we have been using all the NAICS that fall inside a buffer. We are going to change this to only SAMPLE just two NAICS from the entire list of NAICS using the weighted Gaussian distance. Once two NAICS are selected, we will:  
+
+* Rebuild the model  
+* Evaluate accuracy for each tour in the TRAINING dataset  
+* NAICS will be re-weighted for tours that were incorrectly classified
+* Sample TWO NAICS again from the re-weighted data 
+* Rebuild the model and repeat till convergence or a predefined set of EPOCHS  
+
+```{r}
+
+h2o.shutdown(prompt = FALSE)
+h2o.init(nthreads = 6, max_mem_size = "32g")
+
+set.seed(42)
+sampled_naics = list()
+num_cols_to_sample <- 40
+
+# add unique iD
+dnn_df1 <- dnn_df1 %>%
+  mutate(., temp_flag = 1:n()) %>%
+  select(c(temp_flag,ID,new_grp), everything()) 
+
+# save original df for comparing later on
+dnn_df1_orig <- dnn_df1
+
+# Make TRAINING AND TESTING
+# Get Test data before SMOTE
+# index <- createDataPartition(dnn_df1$new_grp, p=0.2, list=FALSE)
+# testset_flag <- dnn_df1[index,] %>%
+#   subset(., select = c(temp_flag))
+
+for (k in 1:10){
+  
+  print(k)
+  
+  temp <- dnn_df1[,c(1,9:50)] %>%
+    melt(., id.vars = "temp_flag")
+
+  # get the count of non-zero NAICS points for each tour
+  grp <- temp %>%
+    group_by(temp_flag) %>%
+    summarise_all(funs(sum(.!=0))) %>%
+    subset(., select = -c(variable))
+  colnames(grp) <- c("temp_flag", "count")
+  
+  # merge the count back
+  temp <- merge(temp, grp, by = "temp_flag")
+  
+  # All records with less than or equal to number of columns to sample are separated out as these will not be sampled
+  temp1 <- subset(temp, count <= num_cols_to_sample) 
+  
+  if(nrow(temp1)>0){
+    
+    temp1 <- temp1 %>%
+      subset(., value > 0) %>%
+      subset(., select = -c(count)) %>%
+      dcast(., temp_flag ~ variable, value.var = "value") %>%
+      .[order(.$temp_flag),]
+      temp1[is.na(temp1)] <- 0
+   
+    
+  }
+  
+  # Now sample the number of columns needed
+  temp2 <- subset(temp, count > num_cols_to_sample)
+  
+  grp2 <- temp2 %>% 
+    group_by(temp_flag) %>%
+    sample_n(size=num_cols_to_sample, weight=.$value) %>%
+    subset(., select = -c(count)) %>%
+   dcast(., temp_flag ~ variable, value.var = "value")
+  grp2[is.na(grp2)] <- 0
+  
+  
+  # Merge it all back to create a master training dataset for Training the GBM
+  
+  if(nrow(temp1) >0){
+    
+    dnn_df2 <- bind_rows(temp1, grp2) 
+    dnn_df2[is.na(dnn_df2)] <- 0
+  
+  } else {
+    
+    dnn_df2 <- grp2
+    
+  }
+  
+  tdf <- subset(dnn_df1, select = c(new_grp, week_flag, csd, tour_dist, ggh_trans, ln_dist, weight,temp_flag))
+  dnn_df2 <- merge(dnn_df2, tdf, by = "temp_flag") %>%
+    select(c(temp_flag,new_grp), everything()) %>%
+    transform(., weight = ifelse(new_grp %in% c("FUELS"),1,1)) %>%
+    subset(., select = -c(weight.x, weight.y, ln_dist.x, ln_dist.y)) %>%
+    transform(., ln_dist = log(tour_dist))
+    
+  
+  # Make TRAINING AND TESTING
+  # Get Test data before SMOTE
+  # testSet <- subset(dnn_df2, temp_flag %in% testset_flag$temp_flag)
+  # colnames(testSet)[2] <- "class"
+  # testSet$class <- as.factor(testSet$class)
+  # testSet$week_flag <- as.factor(testSet$week_flag)
+  # testSet$urban_area <- as.factor(testSet$urban_area)
+  # testSet$csduid <- as.factor(testSet$csduid)
+  
+  # USE ALL THE DATA FOR THE BAYESIAN
+  # trainSet <- subset(dnn_df2, !temp_flag %in% testset_flag$temp_flag)
+  trainSet <- dnn_df2
+  colnames(trainSet)[2] <- "class"
+  trainSet$class <- as.factor(trainSet$class)
+  trainSet$week_flag <- as.factor(trainSet$week_flag)
+  trainSet$ggh_trans <- as.factor(trainSet$ggh_trans)
+  trainSet$csd <- as.factor(trainSet$csd)
+  table(trainSet$class)
+  
+  # START H2O
+  train <- as.h2o(trainSet)
+  
+  # GBM
+  model_rf <- h2o.gbm(
+                          model_id = "GBM_Attempt_CFAF_bayesian",
+                          x=colnames(train[c(3:48)]), 
+                          y = "class", 
+                          training_frame = train,
+                          nfolds = 5,
+                          keep_cross_validation_predictions = TRUE,
+                          ntrees = 50,
+                          stopping_tolerance = 0.005,
+                          stopping_rounds = 0,
+                          sample_rate = 0.67,
+                          col_sample_rate = 0.6,
+                          max_depth = 100,
+                          min_rows = 3,
+                          nbins = 200,
+                          distribution = "multinomial",
+                          fold_assignment = "Stratified",
+                          weights = "weight",
+                          nbins_cats = 200)
+  
+
+  
+  # Get the Training predictions back for this will be used to compute the corrections
+  cvpreds_id <- model_rf@model$cross_validation_holdout_predictions_frame_id$name
+  cvpreds <- as.data.frame(h2o.getFrame(cvpreds_id))
+  
+  # create new dataframe and then get the correct and incorrect
+  new_trainset <- trainSet %>%
+    cbind(., cvpreds)
+  
+  # Those that the model got correct in Training
+  correct_df <- subset(new_trainset, class == predict)
+  correct_groups <- correct_df %>%
+    group_by(class) %>%
+    summarise(count = n())
+  # Those that the model got IN-Correct in Training
+  incorrect_df <- subset(new_trainset, class != predict)
+  
+  #######################################################
+  
+  # NOW COMPUTE CORRECTIONS TO NAICS WEIGHTS BY CLASS.
+  # We are ignorning the zero valued cells when computing the mean
+  gbest <- correct_df[,c(2:42)]
+    
+  gbest <- gbest %>%
+    group_by(class) %>%
+    summarise_all(., mean, na.rm = TRUE)
+  gbest[is.na(gbest)] <- 0
+  colnames(gbest) <- paste("gb_", colnames(gbest))
+  
+  
+  # NOW correct the NAICS weights (PRIOR) : POSTERIOR
+  dnn_df1 <- merge(dnn_df1, gbest, by.x="new_grp", by.y = "gb_ class") 
+  lrate <- 0.15
+  
+  for (i in 9:48){
+    
+    j = i + 42
+    index_zero <- dnn_df1[,i] > 0
+    dnn_df1[index_zero,i] = dnn_df1[index_zero, i] + lrate*(dnn_df1[index_zero, j] - dnn_df1[index_zero, i])
+
+    
+  }
+
+
+  # set all negatives to zero. This is an indication that these NAICS are insignificant for the 
+  # particular tour and buffer combination
+  dnn_df1[dnn_df1<0] <- 0
+  dnn_df1 <- dnn_df1[1:50] %>%
+    select(c(temp_flag,ID,new_grp), everything())
+
+
+  
+  
+}
+
+
+h2o.flow()
+
+################################################################
+
+```
+
+
+
+## Calculate FINAL TRAINING DATA
+
+```{r}
+
+dnn_df1_orig1 <- dnn_df1_orig # make a copy as a back up
+# dnn_df1_orig <- dnn_df1_orig1
+
+
+########################################################
+# Calculate PRIOR and POSTERIOR WEIGHTS. This will give us
+# the re-wighting vector for building the final training model
+
+prior_wts <- dnn_df1_orig %>%
+  subset(., select = c(9:48)) %>%
+  melt(.) 
+is.na(prior_wts) <- prior_wts == 0 # set zeros to NAs so that we can exclude them from the mean calculation
+
+prior_wts <- prior_wts %>%
+  group_by(variable) %>%
+  summarise_all(., mean, na.rm = TRUE)
+colnames(prior_wts) <- c("variable", "prior_wt")
+
+post_wts <- dnn_df1 %>%
+  subset(., select = c(9:48)) %>%
+  melt(.)
+is.na(post_wts) <- post_wts == 0
+
+post_wts <- post_wts %>%
+  group_by(variable) %>%
+  summarise_all(., mean, na.rm = TRUE)
+colnames(post_wts) <- c("variable", "post_wt")
+
+
+# compute the re-weighting vector
+wt_vec <- cbind(prior_wts, post_wts) %>%
+  transform(., wt_vec = post_wt/prior_wt) %>%
+  subset(., select = c(variable, wt_vec)) %>%
+  dcast(., .~variable) %>%
+  .[,c(2:ncol(.))]
+colnames(wt_vec) <- paste("wt_", colnames(wt_vec))
+
+# repeat the rows for cbind operation with the original df
+wt_vec <- bind_rows(replicate(nrow(dnn_df1_orig), wt_vec, simplify = FALSE))
+dnn_df1_orig <- cbind(dnn_df1_orig, wt_vec)
+  
+# Now compute the Posteriro NAICSs using the Prior and weight vector
+  for (i in 9:48){
+    
+    j = i + 42
+    dnn_df1_orig[,i] = dnn_df1_orig[, i]*dnn_df1_orig[,j]
+    
+  }
+
+##################
+# Build the FINAL TRAINING DATASET AFTER APPLYING THE POSTERIOR WEIGHTS
+
+temp <- dnn_df1_orig[,c(1,9:49)] %>%
+  melt(., id.vars = "temp_flag")
+
+grp <- temp %>%
+  group_by(temp_flag) %>%
+  summarise_all(funs(sum(.!=0))) %>%
+  subset(., select = -c(variable))
+colnames(grp) <- c("temp_flag", "count")
+
+
+# merge the count back
+temp <- merge(temp, grp, by = "temp_flag")
+
+# All records with less than or equal to number of columns to sample are separated out as these will not be sampled
+temp1 <- subset(temp, count <= num_cols_to_sample) 
+
+if(nrow(temp1)>0){
+  
+  temp1 <- temp1 %>%
+    subset(., value > 0) %>%
+    subset(., select = -c(count)) %>%
+    dcast(., temp_flag ~ variable, value.var = "value")
+    temp1[is.na(temp1)] <- 0
+  
+}
+
+# Now sample the number of columns needed
+temp2 <- subset(temp, count > num_cols_to_sample)
+
+grp2 <- temp2 %>% 
+  group_by(temp_flag) %>%
+  sample_n(size=num_cols_to_sample, weight=.$value) %>%
+  subset(., select = -c(count)) %>%
+ dcast(., temp_flag ~ variable, value.var = "value")
+grp2[is.na(grp2)] <- 0
+
+
+# Merge it all back to create a master training dataset for Training the GBM
+
+if(nrow(temp1) >0){
+  
+  dnn_df2 <- bind_rows(temp1, grp2) 
+  dnn_df2[is.na(dnn_df2)] <- 0
+
+} else {
+  
+  dnn_df2 <- grp2
+  
+}
+
+tdf <- subset(dnn_df1, select = c(temp_flag,ID,new_grp, week_flag, csd,tour_dist, ggh_trans, weight))
+dnn_df2 <- merge(dnn_df2, tdf, by = "temp_flag") %>%
+  select(c(ID,temp_flag,new_grp), everything())
+
+#####################################################################
+# Come back to this if needed 
+
+
+# test column transformations and weights.
+dnn_df2 <- dnn_df2 %>%
+  # transform(., n23 = ifelse(n23 !=0, log(n23), n23)) %>%
+  # transform(., n31 = ifelse(n31 !=0, log(n31), n31)) %>%
+  transform(., weight = ifelse(!new_grp %in% c("2"), 1,1)) %>%
+  transform(., new_grp = ifelse(new_grp %in% c(7,8,2), 100, new_grp))
+
+###########################################################################
+
+# Make TRAINING AND TESTING
+# Get Test data before SMOTE
+# index <- createDataPartition(dnn_df2$new_grp, p=0.2, list=FALSE)
+# testSet <- dnn_df2[index,]
+# colnames(testSet)[2] <- "class"
+# testSet$class <- as.factor(testSet$class)
+# testSet$week_flag <- as.factor(testSet$week_flag)
+# testSet$urban_area <- as.factor(testSet$urban_area)
+# testSet$csduid <- as.factor(testSet$csduid)
+
+# generate new records using SMOTE on the Training set only
+trainSet <- dnn_df2
+colnames(trainSet)[3] <- "class"
+trainSet$class <- as.factor(trainSet$class)
+trainSet$week_flag <- as.factor(trainSet$week_flag)
+trainSet$ggh_trans <- as.factor(trainSet$ggh_trans)
+trainSet$csd <- as.factor(trainSet$csd)
+table(trainSet$class)
+
+# START H2O
+h2o.shutdown(prompt = FALSE)
+h2o.init(nthreads = 6, max_mem_size = "32g")
+
+set.seed(42)
+train <- as.h2o(trainSet)
+# test <- as.h2o(testSet)
+
+# GBM
+model_rf <- h2o.gbm(
+                        model_id = "GBM_Attempt_FullModel",
+                        x=colnames(train[c(4:49)]), 
+                        y = "class", 
+                        training_frame = train,
+                        nfolds = 5,
+                        keep_cross_validation_predictions = TRUE,
+                        ntrees =100,
+                        stopping_tolerance = 0.005,
+                        stopping_rounds = 0,
+                        sample_rate = 0.67,
+                        col_sample_rate = 0.6,
+                        max_depth = 40,
+                        min_rows = 3,
+                        nbins = 600,
+                        distribution = "multinomial",
+                        fold_assignment = "Stratified",
+                        weights = "weight",
+                        nbins_cats = 600)
+
+
+
+
+h2o.flow()
+
+
+
+```
+
+
+## Compare the NACIS distributions  
+
+The idea was to see how far different is the Bayesian distribution from the Gaussian and how can one transform the Gaussian to mimic the Bayesian. I realize that even if the distributions can be made to match it does not gaurantee the model improving because we are not doing the adjustment by each observation.
+
+```{r}
+
+########################################################
+# Let's plot the Gaussian and Bayersian distributions of Naics
+dist_gaussian <- dnn_df1_orig1[c(1,6:25)] 
+dist_bayesian <- dnn_df1[c(1,6:25)]
+dist_synth <- dnn_df2[c(1,3:22)]
+
+
+colnames(dist_gaussian)[2:21] <- paste("gauss_", colnames(dist_gaussian[, c(2:21)]), sep = "")
+colnames(dist_bayesian)[2:21] <- paste("bayes_", colnames(dist_bayesian[, c(2:21)]), sep = "")
+colnames(dist_synth)[2:21] <- paste("synth_", colnames(dist_synth[, c(2:21)]), sep = "")
+
+distrbutions <- merge(dist_gaussian, dist_bayesian, by = "temp_flag") %>%
+  merge(., dist_synth, by = "temp_flag") %>%
+  melt(., id = "temp_flag") %>%
+  subset(., value > 0) %>%
+  transform(., model = substr(variable, 1, 5)) %>%
+  transform(., naics = substr(variable, 7,10)) %>%
+  subset(., select = -c(variable)) %>%
+  transform(., bins = cut(.$value, 200))
+
+g <- ggplot(distrbutions, aes(bins, fill = model)) +
+  geom_bar(alpha = 0.5) +
+  facet_wrap(~naics, nrow = 7, scales = "free") + 
+  theme(axis.text.y = element_text(size = 4),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) 
+
+suppressWarnings(print(g))
+
+```
+
+None of the Gaussian's are similar to the Bayesian distributions. For the most part it looks like the exponential of the Gaussian should actually look like a Normal as shown by the Gaussian.
+
+## Transform the variables using EXP/Log/whatever else I can think of 
+
+### Let's look at some examples
+
+```{r}
+
+# This is the synthetic
+ggplot(dnn_df1_orig1, aes(log(1/n31))) +
+geom_histogram(binwidth = 0.001)
+
+ggplot(subset(dnn_df2, n72>0), aes(n72)) +
+  geom_histogram(binwidth = 0.001)
+
+temp <- subset(dnn_df2, n72 > 0) %>%
+  subset(., select = c(n72))
+ggplot(transform(temp, n72 = log(exp(0.3*n72))), aes(n72)) +
+  geom_histogram(binwidth = 0.001)
+
+# ggplot(transform(temp, n41 = log((n41^0.01)*exp(0.3*n41))), aes(n41)) +
+#   geom_histogram(binwidth = 0.001)
+
+# ggplot(transform(temp, n81 = exp(0.3*n81)), aes(n81)) +
+#   geom_histogram(binwidth = 0.001)
+
+# ggplot(transform(temp, n23 = (n23^0.7)*exp(-0.4*n23)), aes(n23)) +
+#   geom_histogram(binwidth = 0.001)
+
+# ggplot(transform(temp, n48 = log((n48^0.007)*exp(0.1*n48))+0.1), aes(n48)) +
+#   geom_histogram(binwidth = 0.001)
+
+# ggplot(transform(temp, n44 = log((n44^0.01)*exp(0.4*n44))), aes(n44)) +
+#   geom_histogram(binwidth = 0.001)
+
+# ggplot(transform(temp, n31 = log((n31^0.01)*exp(0.3*n31))), aes(n31)) +
+#   geom_histogram(binwidth = 0.001)
+
+
+ggplot(subset(dist_bayesian, bayes_n72>0), aes(bayes_n72)) +
+  geom_histogram(binwidth = 0.001) 
+
+
+```
+
+
+
+
+```{r}
+
+h2o.shutdown(prompt = FALSE)
+h2o.init(nthreads = 6, max_mem_size = "12g")
+
+# dnn_df2_exp <- dnn_df2 %>%
+#   transform(., n31 = ifelse(n31 > 0, log((n31^0.01)*exp(0.3*n31)), n31)) %>%
+#   transform(., n44 = ifelse(n44 > 0, log((n44^0.01)*exp(0.4*n44)), n44)) %>%
+#   transform(., n31 = ifelse(n48 > 0, log(((n48^0.007)*exp(0.1*n48))+0.1), n48)) %>%
+#   transform(., n23 = ifelse(n23 > 0, (n23^0.7)*exp(-0.4*n23), n23)) %>%
+#   transform(., n81 = ifelse(n81 > 0, exp(0.3*n81), n81)) %>%
+#   transform(., n41 = ifelse(n41 > 0, log((n41^0.01)*exp(0.3*n41)), n41)) 
+
+
+dnn_df2_exp <- dnn_df1
+
+for (i in 7:46){
+  
+  index_zero <- dnn_df2_exp[,i] > 0
+  dnn_df2_exp[index_zero,i] <- log(dnn_df2_exp[index_zero,i])
+}
+
+# Make TRAINING AND TESTING
+# Get Test data before SMOTE
+index <- createDataPartition(dnn_df2_exp$new_grp, p=0.2, list=FALSE)
+testSet <- dnn_df2_exp[index,]
+colnames(testSet)[2] <- "class"
+testSet$class <- as.factor(testSet$class)
+testSet$week_flag <- as.factor(testSet$week_flag)
+testSet$urban_area <- as.factor(testSet$urban_area)
+testSet$csduid <- as.factor(testSet$csduid)
+
+# generate new records using SMOTE on the Training set only
+trainSet <- dnn_df2_exp[-index,]
+colnames(trainSet)[2] <- "class"
+trainSet$class <- as.factor(trainSet$class)
+trainSet$week_flag <- as.factor(trainSet$week_flag)
+trainSet$urban_area <- as.factor(trainSet$urban_area)
+trainSet$csduid <- as.factor(trainSet$csduid)
+table(trainSet$class)
+
+# START H2O
+train <- as.h2o(trainSet)
+test <- as.h2o(testSet)
+
+# GBM
+model_rf <- h2o.gbm(
+                        model_id = "GBM_Attempt_FullModel_exp1",
+                        x=colnames(train[c(3:28)]), 
+                        y = "class", 
+                        training_frame = train,
+                        nfolds = 5,
+                        keep_cross_validation_predictions = TRUE,
+                        ntrees = 45,
+                        stopping_tolerance = 0.005,
+                        stopping_rounds = 0,
+                        sample_rate = 0.6,
+                        col_sample_rate = 0.6,
+                        max_depth = 40,
+                        min_rows = 3,
+                        nbins = 80,
+                        distribution = "multinomial",
+                        fold_assignment = "Stratified",
+                        weights = "weight",
+                        nbins_cats = 600)
+
+
+
+
+h2o.flow()
+
+
+
+
+```
+
+
+### META CLASSES  
+
+```{r}
+
+h2o.shutdown(prompt = FALSE)
+h2o.init(nthreads = 6, max_mem_size = "10g")
+
+dnn_df2_exp <- transform(dnn_df2_exp, new_grp1 = 
+                           ifelse(new_grp %in% c("MISC","BMETL","FOOD","OTHMF", "PLCHM"), "META1", "META2")) %>%
+  transform(., weight = ifelse(new_grp1 != "META1", 10,1)) %>%
+  select(new_grp1, everything())
+
+# Make TRAINING AND TESTING
+# Get Test data before SMOTE
+index <- createDataPartition(dnn_df2_exp$new_grp1, p=0.2, list=FALSE)
+testSet <- dnn_df2_exp[index,]
+colnames(testSet)[1] <- "class"
+testSet$class <- as.factor(testSet$class)
+testSet$week_flag <- as.factor(testSet$week_flag)
+testSet$urban_area <- as.factor(testSet$urban_area)
+testSet$csduid <- as.factor(testSet$csduid)
+
+# generate new records using SMOTE on the Training set only
+trainSet <- dnn_df2_exp[-index,]
+colnames(trainSet)[1] <- "class"
+trainSet$class <- as.factor(trainSet$class)
+trainSet$week_flag <- as.factor(trainSet$week_flag)
+trainSet$urban_area <- as.factor(trainSet$urban_area)
+trainSet$csduid <- as.factor(trainSet$csduid)
+table(trainSet$class)
+
+# START H2O
+train <- as.h2o(trainSet)
+test <- as.h2o(testSet)
+
+# GBM
+model_rf <- h2o.gbm(
+                        model_id = "GBM_Attempt_FullModel_exp_MC1",
+                        x=colnames(train[c(4:29)]), 
+                        y = "class", 
+                        training_frame = train,
+                        nfolds = 5,
+                        keep_cross_validation_predictions = TRUE,
+                        ntrees = 75,
+                        stopping_tolerance = 0.005,
+                        stopping_rounds = 0,
+                        sample_rate = 0.67,
+                        col_sample_rate = 0.6,
+                        max_depth = 40,
+                        min_rows = 3,
+                        nbins = 80,
+                        distribution = "multinomial",
+                        fold_assignment = "Stratified",
+                        weights = "weight",
+                        nbins_cats = 600)
+
+
+
+
+h2o.flow()
+
+
+
+```
+
+
+
+## SAMPLING OF CLASSES 
+
+```{r}
+
+#################################################
+
+cvpreds_id <- h2o.predict(model_rf, test)
+df_yhat_test <- as.data.frame(cvpreds_id)
+
+# SAMPLE A CLASS INSTEAD OF SELECTING THE ONE WITH THE HIGHEST PROB
+sampled_class = list()
+
+for (i in 1:nrow(df_yhat_test)){
+
+  temp_df <- df_yhat_test[i,] %>%
+    melt(., id.vars = "predict")
+
+  sampled_class[[i]] <- sample_n(tbl=temp_df, size=1, weight=temp_df$value)
+  
+}
+
+sampled_class1 = rbindlist(sampled_class, fill = TRUE) %>%
+  subset(., select = -c(value))
+colnames(sampled_class1) <- c("predicted", "sampled")
+
+testset_pred <- cbind(testSet, sampled_class1)
+testset_pred <- cbind(testSet, df_yhat_test)
+
+# Confusion matrices
+xtabs(~class + sampled, data = testset_pred)
+xtabs(~class + predicted, data = testset_pred)
+
+```
+
